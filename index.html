@@ -176,7 +176,38 @@ const KEY_OLD = "filmnfc.v1";   // 改名前用的键，只读一次把老数据
 const FORMATS = ["135","120","110","大画幅","其他"];
 const DEFAULT_FRAMES = { "135":36, "120":12, "110":24, "大画幅":1, "其他":36 };
 
-function blank(){ return { version:2, cameras:{} }; }
+function blank(){ return { version:2, cameras:{}, films:{} }; }
+
+/* ── 胶卷库存 ──
+   和「素材库」FILMS 的分工：FILMS 只是「型号 → ISO」对照表，用来装卷时预填 ISO；
+   films 才是**存量** —— 某一款还有几卷没拆。
+
+   为什么用「型号 + 画幅」当键：同一款 Portra 400，135 和 120 是两件不同的东西 ——
+   价格不同、能拍的张数不同、能塞进哪台机身也不同，混在一起算存量没有意义。
+   键做成确定的（filmId@画幅）而不是随机 id，于是**重复导入同一款会合并成一条**，
+   而不是每导一次就多出一条。 */
+/* 键不能直接用 filmId()：那个函数会把非 [a-z0-9] 的字符全部丢掉，
+   于是纯中文型号会退化成空串再兜底成 "roll" ——
+   「富士 100」和「柯达 100」都会变成 "100"，两条不同的库存悄悄并成一条。
+   所以这里只做「小写 + 空白折叠」，中文字符原样保留。 */
+function filmKey(stock, format){
+  const base = String(stock || "").trim().toLowerCase()
+               .replace(/\s+/g, "-").replace(/^-+|-+$/g, "");
+  return (base || "roll") + "@" + (format || "其他");
+}
+
+function normalizeFilm(f){
+  if (!f) return null;
+  f.stock  = String(f.stock || "").trim();
+  if (!f.stock) return null;
+  f.format = FORMATS.indexOf(f.format) >= 0 ? f.format : "135";
+  f.count  = Math.max(0, Math.round(Number(f.count) || 0));
+  f.exp      = String(f.exp || "");        // 有效期，YYYY-MM
+  f.boughtAt = String(f.boughtAt || "");   // 购入日期，YYYY-MM-DD
+  f.price    = (f.price === "" || f.price == null) ? null : (Number(f.price) || null);
+  f.note     = String(f.note || "");
+  return f;
+}
 
 /* 补齐缺失字段，让 v1 的老数据直接可用，不必写一次性迁移 */
 function normalizeRoll(r, camFormat){
@@ -193,6 +224,13 @@ function normalizeRoll(r, camFormat){
 
 function normalize(d){
   d.version = 2;
+  /* 老数据里没有 films 这个键，补一个空的即可 —— 不能因为加了库存就让老库读不出来 */
+  if (!d.films || typeof d.films !== "object" || Array.isArray(d.films)) d.films = {};
+  for (const k of Object.keys(d.films)){
+    const f = normalizeFilm(d.films[k]);
+    if (!f) delete d.films[k];
+    else { f.id = k; d.films[k] = f; }
+  }
   for (const c of Object.values(d.cameras)){
     c.id     = c.id || newCamId();
     c.name   = c.name || "未命名机身";
@@ -343,6 +381,14 @@ function daysAgo(n){
   return x.getFullYear() + "-" + p(x.getMonth() + 1) + "-" + p(x.getDate());
 }
 
+/* 相对当前月份的 "YYYY-MM"。库存的有效期只精确到月，
+   而且示例数据里的日期必须是相对今天的，否则过一阵子示例就全变成"已过期"了。 */
+function monthsAhead(n){
+  const x = new Date();
+  x.setMonth(x.getMonth() + n);
+  return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0");
+}
+
 function demoData(){
   const now = new Date().toISOString();
   return {
@@ -389,6 +435,22 @@ function demoData(){
             unloadedAt:daysAgo(96), shots:12, total:12, note:"", filmId:"kodak-portra-160" }
         ]
       }
+    },
+    /* 库存示例。注意 Portra 400 同时出现在 135 和 120 上 ——
+       这正是「同款不同画幅算两条」的例子，价格和存量都不一样。 */
+    films: {
+      "kodak-portra-400@135": { id:"kodak-portra-400@135", stock:"Kodak Portra 400", format:"135",
+        count:8, exp:monthsAhead(9), boughtAt:daysAgo(196), price:78, note:"冰箱冷藏" },
+      "kodak-portra-400@120": { id:"kodak-portra-400@120", stock:"Kodak Portra 400", format:"120",
+        count:3, exp:monthsAhead(20), boughtAt:daysAgo(120), price:95, note:"" },
+      "ilford-hp5-plus-400@135": { id:"ilford-hp5-plus-400@135", stock:"Ilford HP5 Plus 400", format:"135",
+        count:12, exp:monthsAhead(3), boughtAt:daysAgo(300), price:52, note:"分装卷" },
+      "fujifilm-pro-400h@120": { id:"fujifilm-pro-400h@120", stock:"Fujifilm Pro 400H", format:"120",
+        count:1, exp:monthsAhead(-2), boughtAt:daysAgo(700), price:118, note:"停产了，过期也留着拍" },
+      "kodak-ektar-100@135": { id:"kodak-ektar-100@135", stock:"Kodak Ektar 100", format:"135",
+        count:5, exp:"", boughtAt:daysAgo(60), price:88, note:"" },
+      "adox-cms-20-ii@135": { id:"adox-cms-20-ii@135", stock:"Adox CMS 20 II", format:"135",
+        count:2, exp:monthsAhead(40), boughtAt:daysAgo(30), price:64, note:"超细颗粒" }
     }
   };
 }
@@ -397,7 +459,7 @@ function loadDemo(){
   const d = load();
   if (Object.keys(d.cameras).length && !confirm("这会覆盖现在已有的数据，继续？")) return;
   save(demoData());
-  toast("已载入 4 台示例机身");
+  toast("已载入 4 台示例机身和一份库存");
   go("#/");
 }
 
@@ -418,6 +480,13 @@ function parseRoute(){
   if (!seg.length) return { view:"home" };
   if (seg[0] === "settings") return { view:"settings" };
   if (seg[0] === "stats")    return { view:"stats" };
+  if (seg[0] === "films"){
+    if (!seg[1])                     return { view:"films" };
+    if (seg[1] === "new")            return { view:"filmForm",  key:null };
+    if (seg[1] === "import")         return { view:"filmImport" };
+    if (seg[1] === "edit" && seg[2]) return { view:"filmForm",  key:seg[2] };
+    return { view:"films" };
+  }
   if (seg[0] === "c" && seg[1]){
     if (seg[2] === "setup")  return { view:"setup",   id:seg[1] };
     if (seg[2] === "load")   return { view:"load",    id:seg[1] };
@@ -429,6 +498,228 @@ function parseRoute(){
 }
 
 function go(path){ location.hash = path; }
+
+/* ══════════════ 胶卷库存 ══════════════ */
+
+function filmList(db){
+  return Object.values(db.films || {}).sort((a, b) => {
+    const ea = a.exp || "9999-99", eb = b.exp || "9999-99";   // 最快到期的排最前
+    if (ea !== eb) return ea < eb ? -1 : 1;
+    const fa = FORMATS.indexOf(a.format), fb = FORMATS.indexOf(b.format);
+    if (fa !== fb) return fa - fb;
+    return (b.count - a.count) || String(a.stock).localeCompare(String(b.stock));
+  });
+}
+
+/* 有效期状态。只精确到月 —— 胶卷保质期本来就粗，按天算没有意义。 */
+function expState(f){
+  const m = /^(\d{4})-(\d{2})$/.exec(f.exp || "");
+  if (!m) return null;
+  const now = new Date();
+  const left = (Number(m[1]) - now.getFullYear()) * 12 + (Number(m[2]) - (now.getMonth() + 1));
+  if (left < 0)   return { text: "已过期",              level: "warn" };
+  if (left === 0) return { text: "本月到期",            level: "warn" };
+  if (left <= 6)  return { text: "还剩 " + left + " 个月", level: "warn" };
+  return null;
+}
+
+function filmTotals(db){
+  let rolls = 0, spent = 0, soon = 0;
+  const list = filmList(db);
+  for (const f of list){
+    rolls += f.count;
+    if (f.price != null) spent += f.price * f.count;
+    if (f.count > 0 && expState(f)) soon++;
+  }
+  return { rolls, spent, soon, kinds: list.length };
+}
+
+/* ── 表格导入 ──
+   解析器只做「够用」的那部分约定：带引号的字段、字段里的分隔符、"" 转义的双引号、
+   CRLF、以及 Excel 导出时爱加的 BOM。不求 RFC 4180 的全部分支，
+   但必须吃得住真实表格 —— 尤其型号里带逗号的写法（"Kodak Portra 400, 5卷装"）。 */
+function sniffDelim(text){
+  const firstLine = String(text).replace(/^\uFEFF/, "").split(/\r?\n/).find(l => l.trim()) || "";
+  let best = ",", bestN = -1;
+  for (const d of [",", "\t", ";", "|"]){
+    const n = parseDelimited(firstLine, d)[0].length;
+    if (n > bestN){ bestN = n; best = d; }
+  }
+  return best;
+}
+
+function parseDelimited(text, delim){
+  const rows = [];
+  let row = [], field = "", inQ = false;
+  const s = String(text).replace(/^\uFEFF/, "");
+  for (let i = 0; i < s.length; i++){
+    const ch = s[i];
+    if (inQ){
+      if (ch === '"'){
+        if (s[i + 1] === '"'){ field += '"'; i++; }   // "" 是一个字面量的引号
+        else inQ = false;
+      } else field += ch;
+    }
+    else if (ch === '"') inQ = true;
+    else if (ch === delim){ row.push(field); field = ""; }
+    else if (ch === "\n"){ row.push(field); rows.push(row); row = []; field = ""; }
+    else if (ch === "\r"){ /* 吃掉，交给 \n 收尾 */ }
+    else field += ch;
+  }
+  if (field !== "" || row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => String(c).trim() !== ""));
+}
+
+/* 表头别名。真实表格五花八门，所以这里的目标是「认得出来」，
+   认不准就让用户在下拉里手工指定 —— 不靠猜。 */
+const IMPORT_COLS = {
+  stock:    ["型号","胶卷","胶卷型号","型号名称","名称","品名","类型","film","stock","filmstock","type"],
+  count:    ["数量","卷数","库存","剩余","剩余卷数","存量","个数","件数","qty","count","quantity","rolls"],
+  format:   ["画幅","规格","幅面","尺寸","format","size"],
+  exp:      ["有效期","有效期限","到期","到期日","保质期","过期","exp","expiry","expire","expiration"],
+  boughtAt: ["购入日期","购买日期","买入日期","入库日期","购入","日期","bought","purchase","purchasedate"],
+  price:    ["单价","价格","购入价","金额","成本","price","unitprice"],
+  note:     ["备注","说明","note","remark","memo"]
+};
+const IMPORT_LABELS = {
+  stock:"型号", count:"数量", format:"画幅", exp:"有效期",
+  boughtAt:"购入日期", price:"单价", note:"备注"
+};
+
+function normHead(s){
+  return String(s == null ? "" : s).trim().toLowerCase()
+         .replace(/[\s\u3000]/g, "").replace(/[（(].*?[)）]/g, "").replace(/[:：*]/g, "");
+}
+
+/* 识别表头 → { stock:0, count:3, ... }
+   必须分两趟：先整表精确匹配，再整表包含匹配。
+   合成一趟的话，「胶卷型号」这种列会被前一个列名的包含关系先吃掉，
+   导致本该精确命中的列反而抢不到。 */
+function mapImport(headers){
+  const map = {};
+  const norm = headers.map(normHead);
+  for (const pass of ["exact", "loose"]){
+    for (let i = 0; i < norm.length; i++){
+      if (norm[i] === "") continue;
+      for (const key of Object.keys(IMPORT_COLS)){
+        if (map[key] != null) continue;
+        const hit = IMPORT_COLS[key].some(a => {
+          const na = normHead(a);
+          return pass === "exact" ? norm[i] === na : norm[i].indexOf(na) >= 0;
+        });
+        if (hit){ map[key] = i; break; }
+      }
+    }
+  }
+  return map;
+}
+
+const p2 = n => String(Number(n)).padStart(2, "0");
+
+/* 有效期归一成 YYYY-MM。表格里什么写法都有：2027-06、2027/6、2027年6月、
+   202706，还有 Excel 存成日期序列号的 46000。看不懂就返回空，绝不瞎猜。 */
+function normMonth(v){
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  const m = /^(\d{4})\s*[-/.年]\s*(\d{1,2})/.exec(s);
+  if (m) return m[1] + "-" + p2(Math.min(12, Math.max(1, Number(m[2]))));
+  if (/^\d{6}$/.test(s)) return s.slice(0, 4) + "-" + s.slice(4, 6);
+  if (/^\d{5}$/.test(s)){                 // Excel 的日期序列号（1900 起算）
+    const d = new Date(Date.UTC(1899, 11, 30) + Number(s) * 86400000);
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 7);
+  }
+  return "";
+}
+
+function normDate(v){
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  const m = /^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})/.exec(s);
+  if (m) return m[1] + "-" + p2(m[2]) + "-" + p2(m[3]);
+  const mo = normMonth(s);
+  return mo ? mo + "-01" : "";
+}
+
+function normNum(v){
+  const s = String(v == null ? "" : v).replace(/[¥￥$,\s元块]/g, "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  return isFinite(n) ? n : null;
+}
+
+/* 画幅归一：表里写了就用表里的，没写就从型号名里猜（名字带 120 的通常就是 120）。
+   数字用 \b 包住，免得 "Ilford Delta 3200" 里的 "120" 被当成 120 画幅。 */
+function normFormat(v, stock){
+  const probe = t => /4\s*[x×*]\s*5|大画幅|页片|sheet/i.test(t)      ? "大画幅"
+                   : /135|\b3[35]\s*mm\b|全画幅/i.test(t)            ? "135"
+                   : /\b120\b|中画幅|6\s*[x×*]\s*[467]|645/i.test(t) ? "120"
+                   : /\b110\b/i.test(t)                              ? "110"
+                   : null;
+  const s = String(v == null ? "" : v).trim();
+  if (s){
+    const got = probe(s);
+    if (got) return got;
+  }
+  return probe(String(stock || "")) || "135";
+}
+
+/* 解码兜底：中文 Windows 上 Excel 导出的 CSV 常是 GBK 而不是 UTF-8。
+   先严格按 UTF-8 解（解不动会抛），再退 GBK，最后才用宽松 UTF-8 收下。 */
+function decodeBytes(buf){
+  try{ return new TextDecoder("utf-8", { fatal: true }).decode(buf); }catch(e){}
+  try{ return new TextDecoder("gbk").decode(buf); }catch(e){}
+  return new TextDecoder("utf-8").decode(buf);
+}
+
+/* 把解析出来的行写进库存。
+   mode="replace"：这张表是权威全量，同款同画幅直接覆盖（首次导入整份库存）。
+   mode="add"：这张表是新买的一批，同款同画幅数量相加（不冲掉已有存量）。 */
+function applyImport(db, rows, map, mode){
+  if (!db.films) db.films = {};
+  let added = 0, merged = 0, skipped = 0;
+  for (const r of rows){
+    const stock = String(r[map.stock] == null ? "" : r[map.stock]).trim();
+    if (!stock){ skipped++; continue; }
+    const format = normFormat(map.format != null ? r[map.format] : "", stock);
+    const k = filmKey(stock, format);
+    const fresh = {
+      id: k, stock, format,
+      count:    map.count    != null ? Math.max(0, Math.round(normNum(r[map.count]) || 0)) : 1,
+      exp:      map.exp      != null ? normMonth(r[map.exp]) : "",
+      boughtAt: map.boughtAt != null ? normDate(r[map.boughtAt]) : "",
+      price:    map.price    != null ? normNum(r[map.price]) : null,
+      note:     map.note     != null ? String(r[map.note] == null ? "" : r[map.note]).trim() : ""
+    };
+    const old = db.films[k];
+    if (old){
+      fresh.count = mode === "add" ? (old.count + fresh.count) : fresh.count;
+      /* 表里没有的字段沿用原值 —— 别把用户之前在 App 里手工补的信息抹掉 */
+      if (!fresh.exp)          fresh.exp      = old.exp;
+      if (!fresh.boughtAt)     fresh.boughtAt = old.boughtAt;
+      if (fresh.price == null) fresh.price    = old.price;
+      if (!fresh.note)         fresh.note     = old.note;
+      merged++;
+    } else added++;
+    db.films[k] = normalizeFilm(fresh);
+  }
+  return { added, merged, skipped, total: Object.keys(db.films).length };
+}
+
+function pickChip(el, group, hidden){
+  try{ document.querySelectorAll(group + " .chip").forEach(x => x.classList.remove("on")); }catch(e){}
+  el.classList.add("on");
+  if (hidden){
+    const t = document.querySelector(hidden);
+    if (t) t.value = el.value != null ? el.value : t.value;
+  }
+}
+
+function setFilmFormat(el, fmt){
+  try{ document.querySelectorAll("#ffchips .chip").forEach(x => x.classList.remove("on")); }catch(e){}
+  el.classList.add("on");
+  const t = document.querySelector("#ff-format");
+  if (t) t.value = fmt;          // 落一个隐藏字段，读表单时不用去 DOM 里找高亮的那颗
+}
 
 /* ══════════════ 视图 ══════════════ */
 
@@ -477,15 +768,23 @@ function renderHome(db){
   h += '<div style="height:16px"></div>';
   if (!cams.length){
     h += '<button class="btn primary" onclick="addCamera()">＋ 登记第一台机身</button>';
+    h += '<button class="btn" onclick="go(\'#/films\')">胶卷库存</button>';
     h += '<button class="btn" onclick="loadDemo()">载入示例数据，先看看效果</button>';
     h += '<button class="btn ghost" onclick="go(\'#/settings\')">设置与备份</button>';
   } else {
     h += '<button class="btn" onclick="addCamera()">＋ 添加机身</button>';
     h += '<div class="row">'
+       +   '<button class="btn" onclick="go(\'#/films\')">胶卷库存</button>'
        +   '<button class="btn" onclick="go(\'#/stats\')">统计</button>'
-       +   '<button class="btn" onclick="go(\'#/settings\')">设置与备份</button>'
        + '</div>';
+    h += '<button class="btn" onclick="go(\'#/settings\')">设置与备份</button>';
     h += '<button class="btn ghost" onclick="loadDemo()">重载示例数据</button>';
+
+    const ft = filmTotals(db);
+    if (ft.kinds){
+      h += '<div class="hint">库存 ' + ft.kinds + ' 款共 ' + ft.rolls + ' 卷'
+         + (ft.soon ? '，其中 ' + ft.soon + ' 款快到期或已过期' : '') + '。</div>';
+    }
   }
   h += '<div class="foot">碰一下挂件 › 直接跳到那台机身 › 自动记天数和历史<br>'
      +   '标签里要写的网址：<span class="mono">' + esc(tagBase()) + '?c=机身ID</span></div>';
@@ -772,6 +1071,310 @@ function renderStats(db){
   return h;
 }
 
+/* ══════════════ 库存视图 ══════════════ */
+
+function renderFilms(db){
+  const list = filmList(db);
+  const t = filmTotals(db);
+
+  let h = navBack("机库", "#/");
+  h += '<h1>胶卷库存</h1>';
+
+  if (!list.length){
+    h += '<p class="sub">还没有录入库存</p>';
+    h += '<div class="empty"><div class="big">▢</div>记下手上还有哪些卷、各几卷，<br>'
+       +   '装卷时就会自动扣。</div>';
+    h += '<button class="btn primary" onclick="go(\'#/films/new\')">＋ 添加一款胶卷</button>';
+    h += '<button class="btn" onclick="go(\'#/films/import\')">从表格导入（CSV）</button>';
+    return h;
+  }
+
+  h += '<p class="sub">' + t.kinds + ' 款 · 共 ' + t.rolls + ' 卷'
+     + (t.spent ? ' · 按单价算 ¥' + Math.round(t.spent) : '') + '</p>';
+  if (t.soon) h += '<div class="banner w">有 ' + t.soon + ' 款已过期或快到期，已排在最前面。</div>';
+
+  h += '<div class="list">';
+  for (const f of list){
+    const st   = expState(f);
+    const bits = [f.format];
+    if (f.exp)      bits.push("有效期 " + f.exp);
+    if (f.boughtAt) bits.push("购于 " + f.boughtAt);
+    /* 这一行**允许折行**，不用省略号。.cam .roll 的默认样式是 nowrap+ellipsis，
+       手机窄一点就会把「购于 …」尾巴上的日期吃掉 —— 库存列表里的每个字段
+       都是要看的，宁可折成两行也不能藏起来。价格挪到右侧那一列，
+       它本来就和卷数是一组数字，也顺带把折行概率压到最低。 */
+    h += '<div class="item cam" onclick="go(\'#/films/edit/' + encodeURIComponent(f.id) + '\')">'
+       +   '<div class="body">'
+       +     '<div class="name">' + esc(f.stock) + '</div>'
+       +     '<div class="roll" style="white-space:normal">' + esc(bits.join(" · ")) + '</div>'
+       +     (st ? '<div class="tags" style="margin-top:6px"><span class="tag warn">' + esc(st.text) + '</span></div>' : '')
+       +   '</div>'
+       +   '<div class="age"' + (f.count ? '' : ' style="color:var(--warn)"') + '>'
+       +     f.count + ' 卷'
+       +     (f.price != null
+              ? '<div style="font-size:12px;color:var(--ink-3);margin-top:2px">¥' + f.price + '/卷</div>'
+              : '')
+       +   '</div>'
+       +   '<div class="chev">›</div>'
+       + '</div>';
+  }
+  h += '</div>';
+
+  h += '<div style="height:16px"></div>';
+  h += '<button class="btn primary" onclick="go(\'#/films/new\')">＋ 添加一款胶卷</button>';
+  h += '<button class="btn" onclick="go(\'#/films/import\')">从表格导入（CSV）</button>';
+  h += '<div class="foot">库存是数据库的一个顶层字段，<br>跟着相机数据一起同步到私有仓库</div>';
+  return h;
+}
+
+function renderFilmForm(db, key){
+  const exists = !!(key && db.films && db.films[key]);
+  const f = exists ? db.films[key]
+                   : { stock:"", format:"135", count:1, exp:"", boughtAt:"", price:null, note:"" };
+
+  let h = '<div class="nav"><button class="back" onclick="go(\'#/films\')">‹ 库存</button></div>';
+  h += '<h1>' + (exists ? "编辑库存" : "添加胶卷") + '</h1>';
+  /* id 走隐藏字段，不拼进 onclick —— 键里有 @ 和中文，拼字符串容易被引号坑到 */
+  h += '<input type="hidden" id="ff-key" value="' + esc(exists ? key : "") + '">';
+  h += '<input type="hidden" id="ff-format" value="' + esc(f.format) + '">';
+
+  h += '<label>型号</label>'
+     + '<input id="ff-stock" list="filmlist" placeholder="例如 Kodak Portra 400" autocomplete="off" value="' + esc(f.stock) + '">'
+     + '<datalist id="filmlist">';
+  for (const row of FILMS) h += '<option value="' + esc(row[0]) + '"></option>';
+  h += '</datalist>';
+
+  h += '<label>画幅</label><div class="chips" id="ffchips">';
+  for (const fmt of FORMATS){
+    h += '<button class="chip' + (fmt === f.format ? " on" : "") + '"'
+       +   ' onclick="setFilmFormat(this,\'' + esc(fmt) + '\')">' + esc(fmt) + '</button>';
+  }
+  h += '</div>';
+  h += '<div class="hint">同一款胶卷在 135 和 120 上是两条库存 —— 价格、张数都不一样，分开算才不会混。</div>';
+
+  h += '<label>还有几卷</label>'
+     + '<input id="ff-count" type="number" min="0" step="1" inputmode="numeric" value="' + f.count + '">';
+  h += '<label>有效期（可选）</label>'
+     + '<input id="ff-exp" type="month" value="' + esc(f.exp) + '">';
+  h += '<label>购入日期（可选）</label>'
+     + '<input id="ff-bought" type="date" value="' + esc(f.boughtAt) + '">';
+  h += '<label>单价（可选）</label>'
+     + '<input id="ff-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="例如 78" value="'
+     + (f.price == null ? "" : f.price) + '">';
+  h += '<label>备注（可选）</label>'
+     + '<textarea id="ff-note" placeholder="例如 冰箱冷藏 / 分装卷">' + esc(f.note) + '</textarea>';
+
+  h += '<div style="height:22px"></div>';
+  h += '<button class="btn primary" onclick="saveFilm()">' + (exists ? "保存" : "添加") + '</button>';
+  if (exists) h += '<button class="btn ghost" onclick="deleteFilm()">从库存删掉这款</button>';
+  if (exists){
+    /* 「库存键」是内部说法，直接说人话：它是型号＋画幅凑出来的，
+       顺带解释了为什么同一款卷会有 135 / 120 两条。新建时不必显示。 */
+    h += '<div class="hint">这条在库里记作 <span class="mono">' + esc(key) + '</span>'
+       + ' —— 型号和画幅一起决定它是哪一条。</div>';
+  }
+  return h;
+}
+
+function saveFilm(){
+  const db = load();
+  const stock = $("#ff-stock").value.trim();
+  if (!stock){ toast("至少填个型号"); return; }
+
+  const key    = $("#ff-key").value;
+  const rawFmt = $("#ff-format").value;
+  const format = FORMATS.indexOf(rawFmt) >= 0 ? rawFmt : "135";
+  const priceV = $("#ff-price").value;
+
+  const rec = normalizeFilm({
+    stock, format,
+    count:    Number($("#ff-count").value) || 0,
+    exp:      $("#ff-exp").value || "",
+    boughtAt: $("#ff-bought").value || "",
+    price:    priceV === "" ? null : Number(priceV),
+    note:     $("#ff-note").value.trim()
+  });
+  if (!rec){ toast("型号不能为空"); return; }
+
+  const nk = filmKey(stock, format);
+  rec.id = nk;
+  let merged = false;
+
+  if (key && db.films[key] && key !== nk){
+    /* 改了型号或画幅，键就变了。新键上已经有记录的话不能静默覆盖 ——
+       把数量并过去，否则用户会觉得「凭空少了一条」。表里没写的字段沿用新键那份。 */
+    if (db.films[nk]){
+      const keep = db.films[nk];
+      rec.count += keep.count;
+      if (!rec.exp)          rec.exp      = keep.exp;
+      if (!rec.boughtAt)     rec.boughtAt = keep.boughtAt;
+      if (rec.price == null) rec.price    = keep.price;
+      if (!rec.note)         rec.note     = keep.note;
+      merged = true;
+    }
+    delete db.films[key];
+    db.films[nk] = rec;
+  } else if (db.films[nk] && key !== nk){
+    /* 新增一条但库里已经有同款同画幅：数量相加，**但只覆盖用户这次真填了的字段**。
+       新建表单默认是空的，如果无脑覆盖，用户想「再加 4 卷」会把原有的有效期和备注抹掉。 */
+    const keep = db.films[nk];
+    keep.count += rec.count;
+    if (rec.exp)           keep.exp      = rec.exp;
+    if (rec.boughtAt)      keep.boughtAt = rec.boughtAt;
+    if (rec.price != null) keep.price    = rec.price;
+    if (rec.note)          keep.note     = rec.note;
+    keep.id = nk;
+    merged = true;
+  } else {
+    db.films[nk] = rec;
+  }
+
+  save(db);
+  toast(merged ? "同款同画幅已存在，数量相加" : (key ? "已保存" : "已添加"));
+  go("#/films");
+}
+
+function deleteFilm(){
+  const db  = load();
+  const key = $("#ff-key").value;
+  const f   = db.films && db.films[key];
+  if (!f){ toast("这条已经不在了"); go("#/films"); return; }
+  if (!confirm("从库存里删掉「" + f.stock + " " + f.format + "」？\n机身里的装卷记录不受影响。")) return;
+  delete db.films[key];
+  save(db);
+  toast("已删除");
+  go("#/films");
+}
+
+/* ── 导入：三步走（选文件 → 对列 → 确认）。
+
+   中间状态放这里而不进 DB：它不是用户的数据，刷新一下就该重来。
+   否则会出现「用户看到上次的半个导入状态，以为是自己的数据」。 */
+let IMP = null;
+
+function renderFilmImport(){
+  let h = '<div class="nav"><button class="back" onclick="go(\'#/films\')">‹ 库存</button></div>';
+  h += '<h1>从表格导入</h1>';
+
+  if (!IMP){
+    h += '<div class="card" style="padding:16px 18px">';
+    h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
+       + '支持 <b>CSV / TSV</b>。表头怎么写的都能认（型号 / 胶卷型号 / 品名…），'
+       + '认不准的下一步可以手工指定。<br>'
+       + 'Excel 请先「另存为 CSV」—— .xlsx 是个压缩包，浏览器里读不了。</div>';
+    h += '<label>选择文件</label>'
+       + '<input id="imp-file" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" onchange="onImportFile(this)">';
+    h += '<div class="hint">文件只在这台设备上解析，不会上传到任何地方。</div>';
+    h += '</div>';
+    h += '<button class="btn" onclick="importFromPaste()">或者：直接粘贴表格内容</button>';
+    h += '<div class="hint">从 Excel 里选中区域复制，粘进去也行 —— 制表符分隔照样认。</div>';
+    return h;
+  }
+
+  h += '<p class="sub">' + esc(IMP.name) + ' · ' + IMP.rows.length + ' 行数据 · 共 '
+     + IMP.headers.length + ' 列</p>';
+
+  const missing = ["stock","count"].filter(k => IMP.map[k] == null);
+
+  h += '<h2>列对应</h2><div class="card" style="padding:16px 18px">';
+  IMP.headers.forEach((head, i) => {
+    h += '<label>' + esc(head === "" ? "第 " + (i + 1) + " 列" : head) + '</label>';
+    h += '<select id="imp-map-' + i + '" onchange="setImportMap(' + i + ', this.value)">';
+    h += '<option value="">— 不导入 —</option>';
+    for (const k of Object.keys(IMPORT_COLS)){
+      h += '<option value="' + k + '"' + (IMP.map[k] === i ? " selected" : "") + '>'
+         + IMPORT_LABELS[k] + '</option>';
+    }
+    h += '</select>';
+  });
+  h += '</div>';
+  if (missing.length){
+    h += '<div class="banner w">还缺「' + missing.map(k => IMPORT_LABELS[k]).join("、")
+       + '」没指定，指定了才能导。</div>';
+  }
+
+  h += '<h2>头几行认出来是这样</h2><div class="list">';
+  for (const r of IMP.rows.slice(0, 3)){
+    const stock = IMP.map.stock != null ? String(r[IMP.map.stock] || "").trim() : "";
+    const cnt   = IMP.map.count != null ? String(r[IMP.map.count] || "").trim() : "";
+    const rawF  = IMP.map.format != null ? String(r[IMP.map.format] || "").trim() : "";
+    h += '<div class="item"><div class="l1">'
+       +   '<span class="a">' + esc(stock || "（没认到型号）") + '</span>'
+       +   '<span class="b">' + esc(cnt || "?") + ' 卷</span></div>'
+       + '<div class="l2">' + esc(normFormat(rawF, stock))
+       +   (rawF ? '（表里写「' + esc(rawF) + '」）' : '（表里没写，按型号猜的）') + '</div></div>';
+  }
+  h += '</div>';
+
+  h += '<h2>已有的同款怎么办</h2>';
+  h += '<div class="chips">'
+     +   '<button class="chip' + (IMP.mode === "replace" ? " on" : "") + '" onclick="setImportMode(\'replace\')">覆盖</button>'
+     +   '<button class="chip' + (IMP.mode === "add" ? " on" : "") + '" onclick="setImportMode(\'add\')">累加</button>'
+     + '</div>';
+  h += '<div class="hint">' + (IMP.mode === "replace"
+       ? '这张表当作权威全量，同款同画幅的数量直接覆盖。第一次导入整份库存用这个。'
+       : '这张表当作新买的一批，同款同画幅的数量相加，不会把已有存量冲掉。') + '</div>';
+
+  h += '<div style="height:16px"></div>';
+  h += '<button class="btn primary"' + (missing.length ? ' disabled style="opacity:.4"' : '')
+     +   ' onclick="runImport()">确认导入</button>';
+  h += '<button class="btn ghost" onclick="resetImport()">重新选文件</button>';
+  return h;
+}
+
+function resetImport(){ IMP = null; render(true); }
+
+function onImportFile(input){
+  const f = input.files && input.files[0];
+  if (!f) return;
+  if (/\.xlsx?$/i.test(f.name)){ toast("Excel 文件请先另存为 CSV"); return; }
+  const fr = new FileReader();
+  fr.onload = () => {
+    try{ loadImportText(decodeBytes(fr.result), f.name); }
+    catch(e){ toast("这个文件读不出来"); }
+  };
+  fr.onerror = () => toast("读文件失败");
+  fr.readAsArrayBuffer(f);
+}
+
+function importFromPaste(){
+  const text = prompt("把表格内容粘进来（从 Excel 里选中区域复制即可）：");
+  if (text == null || !text.trim()) return;
+  loadImportText(text, "粘贴的表格");
+}
+
+function loadImportText(text, name){
+  const rows = parseDelimited(text, sniffDelim(text));
+  if (rows.length < 2){ toast("至少要有一行表头和一行数据"); return; }
+  const headers = rows[0].map(x => String(x).trim());
+  IMP = { name, headers, rows: rows.slice(1), map: mapImport(headers), mode: "replace" };
+  render(true);
+}
+
+function setImportMap(i, key){
+  if (!IMP) return;
+  for (const k of Object.keys(IMP.map)) if (IMP.map[k] === i) delete IMP.map[k];
+  if (key) IMP.map[key] = i;
+  render(true);
+}
+
+function setImportMode(m){ if (IMP){ IMP.mode = m; render(true); } }
+
+function runImport(){
+  if (!IMP) return;
+  if (IMP.map.stock == null || IMP.map.count == null){
+    toast("先把「型号」和「数量」指定到某一列");
+    return;
+  }
+  const db = load();
+  const r  = applyImport(db, IMP.rows, IMP.map, IMP.mode);
+  save(db);
+  IMP = null;
+  toast("导入 " + r.added + " 款" + (r.merged ? "，合并 " + r.merged + " 款" : "")
+      + (r.skipped ? "，跳过 " + r.skipped + " 行（没型号）" : ""));
+  go("#/films");
+}
+
 function renderSettings(db){
   const n = Object.keys(db.cameras).length;
   let h = navBack("机库", "#/");
@@ -977,8 +1580,22 @@ function saveLoad(id, isEdit){
     c.history.push(Object.assign({}, c.loaded, { unloadedAt: todayLocal() }));
   }
   c.loaded = roll;
+
+  /* 装了新卷就从库存里扣一卷。
+     找不到同款就什么都不做 —— 库存是「手上有多少」的备忘，不是装卷的门槛，
+     绝不能因为它拦着不让装。 */
+  let stockMsg = "";
+  if (!isEdit){
+    const k = filmKey(stock, c.format);
+    const f = db.films && db.films[k];
+    if (f){
+      if (f.count > 0){ f.count--; stockMsg = "，库存还剩 " + f.count + " 卷"; }
+      else stockMsg = "，库存里这款记的是 0 卷，记得对一下";
+    }
+  }
+
   save(db);
-  toast(isEdit ? "已保存" : "装卷完成");
+  toast((isEdit ? "已保存" : "装卷完成") + stockMsg);
   go("#/c/" + encodeURIComponent(id));
 }
 
@@ -1434,6 +2051,9 @@ function render(keepScroll){
   else if (r.view === "edit")  app.innerHTML = renderLoad(db, r.id, true);
   else if (r.view === "history") app.innerHTML = renderHistory(db, r.id);
   else if (r.view === "stats")    app.innerHTML = renderStats(db);
+  else if (r.view === "films")      app.innerHTML = renderFilms(db);
+  else if (r.view === "filmForm")   app.innerHTML = renderFilmForm(db, r.key);
+  else if (r.view === "filmImport") app.innerHTML = renderFilmImport();
   else if (r.view === "settings") app.innerHTML = renderSettings(db);
   if (r.view === "load" || r.view === "edit") afterLoadForm();
   window.scrollTo(0, y);

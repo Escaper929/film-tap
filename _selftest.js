@@ -307,6 +307,221 @@ try {
   check("改名迁移（NAS 设置）", ok1 && ok2, "读老键=" + ok1 + " 落新键=" + ok2);
 } catch (e) { check("改名迁移（NAS 设置）", false, "抛异常 " + e.message); }
 
+/* ── 库存页与汇总 ── */
+try {
+  save(demoData());
+  __setLoc("", "#/films"); render();
+  const ui = __app();
+  const t  = filmTotals(load());
+
+  const ok1 = t.kinds === 6 && t.rolls === 31;
+  const ok2 = ui.indexOf("Kodak Portra 400") >= 0 && ui.indexOf("Fujifilm Pro 400H") >= 0;
+  const ok3 = ui.indexOf("已过期") >= 0;                                  // Pro 400H 那条的标签
+  const ok4 = ui.indexOf("共 31 卷") >= 0;
+
+  const list = filmList(load());
+  const ok5  = list[0].stock === "Fujifilm Pro 400H";                      // 最快到期的排最前
+  const p400 = list.filter(f => f.stock === "Kodak Portra 400");
+  const ok6  = p400.length === 2 && p400[0].format !== p400[1].format;    // 同款不同画幅 = 两条
+
+  /* 单价和购入日期都必须在列表里看得见 —— 这两项一开始被塞进那一行小字里，
+     结果被省略号吃掉了，界面上等于没有。钉住「不许再退回省略号」。 */
+  const ok7 = ui.indexOf("¥78/卷") >= 0 && ui.indexOf("购于 ") >= 0;
+  const rows = ui.split('class="roll" style="white-space:normal"').length - 1;
+  const ok8  = rows === list.length;
+
+  check("库存页与汇总", ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8,
+        "款数/卷数=" + ok1 + " 列出型号=" + ok2 + " 过期标签=" + ok3 +
+        " 汇总文案=" + ok4 + " 排序=" + ok5 + " 同款分画幅=" + ok6 +
+        " 单价可见=" + ok7 + " 不截断=" + ok8);
+} catch (e) { check("库存页与汇总", false, "抛异常 " + e.message); }
+
+/* ── 库存增删与合并 ── */
+try {
+  save(demoData());
+  const before = load().films["kodak-portra-400@135"].count;              // 示例里是 8
+
+  /* 新增一条「同款同画幅」：应当数量相加，而不是变成第 7 条 */
+  __setLoc("", "#/films/new"); render();
+  __setValue("#ff-key", "");
+  __setValue("#ff-stock", "Kodak Portra 400");
+  __setValue("#ff-format", "135");
+  __setValue("#ff-count", "4");
+  __setValue("#ff-exp", "");
+  __setValue("#ff-bought", "");
+  __setValue("#ff-price", "");
+  __setValue("#ff-note", "");
+  saveFilm();
+  const m   = load().films["kodak-portra-400@135"];
+  const ok1 = m.count === before + 4;
+  const ok2 = m.exp === monthsAhead(9) && m.note === "冰箱冷藏";           // 表单留空 → 保住原值
+  const ok3 = Object.keys(load().films).length === 6;
+
+  /* 改画幅 → 键变了，不该留下幽灵条目 */
+  __setLoc("", "#/films/edit/kodak-ektar-100@135"); render();
+  __setValue("#ff-key", "kodak-ektar-100@135");
+  __setValue("#ff-stock", "Kodak Ektar 100");
+  __setValue("#ff-format", "120");
+  __setValue("#ff-count", "5");
+  saveFilm();
+  const ok4 = !load().films["kodak-ektar-100@135"] && !!load().films["kodak-ektar-100@120"];
+
+  /* 删除 */
+  __setLoc("", "#/films/edit/kodak-ektar-100@120"); render();
+  __setValue("#ff-key", "kodak-ektar-100@120");
+  deleteFilm();
+  const ok5 = !load().films["kodak-ektar-100@120"];
+
+  check("库存增删与合并", ok1 && ok2 && ok3 && ok4 && ok5,
+        "同款相加=" + ok1 + " 留空保原值=" + ok2 + " 未新增条目=" + ok3 +
+        " 改键无幽灵=" + ok4 + " 可删除=" + ok5);
+} catch (e) { check("库存增删与合并", false, "抛异常 " + e.message); }
+
+/* ── 表格解析：引号、字段里的分隔符、BOM、CRLF、分隔符嗅探 ── */
+try {
+  /* ⚠️ 下面这段驱动本身是外层模板字符串的一部分，所以字符串里的反斜杠要写**两遍**：
+     直接写 \r 会被外层模板先吃成真的回车，驱动源码就在字符串中间断掉，报
+     "Invalid or unexpected token"。写成 \\r 外层先还原成一个反斜杠，
+     驱动再把它当转义解释，才是我们想要的 CRLF。正则里的 \d 同理，要写 \\d。 */
+  const csv = '\\uFEFF型号,数量,画幅,备注\\r\\n'
+            + 'Kodak Portra 400,12,135,"冰箱冷藏, 别晒"\\r\\n'
+            + '"Fuji, 分装",3,120,""\\r\\n\\r\\n';
+  const rows = parseDelimited(csv, sniffDelim(csv));
+
+  const ok1 = rows.length === 3;                                          // 尾部空行被丢掉
+  const ok2 = rows[0].join("|") === "型号|数量|画幅|备注";                  // BOM 不会黏在表头上
+  const ok3 = rows[1][3] === "冰箱冷藏, 别晒";                             // 引号里带分隔符
+  const ok4 = rows[2][0] === "Fuji, 分装";                                 // 型号本身带逗号
+  const ok5 = sniffDelim("a\\tb\\tc\\n1\\t2\\t3") === "\\t";                // 从 Excel 粘贴是制表符
+  const ok6 = sniffDelim("a;b;c\\n1;2;3") === ";";                        // 欧洲区 Excel 用分号
+  const ok7 = parseDelimited('a,"说 ""引号"" 的写法"', ",")[0][1] === '说 "引号" 的写法';
+
+  check("表格解析", ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7,
+        "行数=" + ok1 + " 表头干净=" + ok2 + " 引导内分隔符=" + ok3 + " 型号带逗号=" + ok4 +
+        " 制表符=" + ok5 + " 分号=" + ok6 + " 转义引号=" + ok7);
+} catch (e) { check("表格解析", false, "抛异常 " + e.message); }
+
+/* ── 列自动识别 ── */
+try {
+  const m1 = mapImport(["胶卷型号 (必填)", "库存数量", "规格", "有效期至", "购买日期", "单价(元)", "备注"]);
+  const ok1 = m1.stock === 0 && m1.count === 1 && m1.format === 2 &&
+              m1.exp === 3 && m1.boughtAt === 4 && m1.price === 5 && m1.note === 6;
+
+  const m2 = mapImport(["Film Stock", "Qty", "Format", "Expiry", "Price"]);
+  const ok2 = m2.stock === 0 && m2.count === 1 && m2.format === 2 && m2.exp === 3 && m2.price === 4;
+
+  /* 「有效期」不能被 buyingAt 的「日期」别名抢走 */
+  const m3 = mapImport(["型号", "数量", "有效期", "购入日期"]);
+  const ok3 = m3.exp === 2 && m3.boughtAt === 3;
+
+  /* 认不出来就别硬认，交给用户在下拉里指定 */
+  const m4 = mapImport(["列一", "列二"]);
+  const ok4 = m4.stock == null && m4.count == null;
+
+  check("列自动识别", ok1 && ok2 && ok3 && ok4,
+        "中文长表头=" + ok1 + " 英文=" + ok2 + " 有效期归位=" + ok3 + " 不乱认=" + ok4);
+} catch (e) { check("列自动识别", false, "抛异常 " + e.message); }
+
+/* ── 字段归一化：画幅、日期、数字 ── */
+try {
+  const ok1 = normFormat("", "Kodak Portra 400 120") === "120";
+  const ok2 = normFormat("135", "随便写") === "135";
+  const ok3 = normFormat("", "Ilford Delta 3200") === "135";     // "3200" 里不能看出 "120"
+  const ok4 = normFormat("4x5", "") === "大画幅" && normFormat("页片", "") === "大画幅";
+  const ok5 = normMonth("2027-06") === "2027-06" && normMonth("2027/6") === "2027-06" &&
+              normMonth("2027年6月") === "2027-06" && normMonth("202706") === "2027-06";
+  const ok6 = normDate("2026/3/12") === "2026-03-12" && normDate("2026-03") === "2026-03-01";
+  const ok7 = normNum("¥78.5 元") === 78.5 && normNum("1,280") === 1280 && normNum("") === null;
+  const ok8 = /^\\d{4}-\\d{2}$/.test(normMonth("46000"));         // Excel 存的日期序列号
+  const ok9 = normMonth("不知道") === "" && normMonth("") === "";  // 看不懂就不猜
+
+  check("字段归一化", ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9,
+        "型号带120=" + ok1 + " 显式优先=" + ok2 + " 3200不误判=" + ok3 + " 大画幅=" + ok4 +
+        " 月份=" + ok5 + " 日期=" + ok6 + " 数字=" + ok7 + " 序列号=" + ok8 + " 不乱猜=" + ok9);
+} catch (e) { check("字段归一化", false, "抛异常 " + e.message); }
+
+/* ── 导入：覆盖 / 累加 / 不抹掉表里没有的字段 ── */
+try {
+  save(demoData());
+  const rows = parseDelimited(
+    "型号,数量,画幅,有效期\\n" +
+    "Kodak Portra 400,20,135,2028-01\\n" +      // 已存在 → 覆盖成 20
+    "Kodak Ektar 100,7,135,\\n" +               // 已存在 → 覆盖成 7
+    "Lomography Color 100,5,135,2028-09\\n" +   // 新增
+    ",3,135,\\n",                               // 没型号 → 跳过
+    ",");
+  const map = mapImport(rows[0]);
+
+  const db = load();
+  const r1 = applyImport(db, rows.slice(1), map, "replace");
+  const ok1 = r1.added === 1 && r1.merged === 2 && r1.skipped === 1;
+  const ok2 = db.films["kodak-portra-400@135"].count === 20;
+  const ok3 = db.films["kodak-portra-400@135"].note === "冰箱冷藏";   // 表里没有备注列 → 保住原值
+  const ok4 = db.films["kodak-portra-400@135"].exp === "2028-01";    // 表里有 → 覆盖
+  const ok5 = !!db.films["lomography-color-100@135"];
+  save(db);
+
+  const db2 = load();
+  const r2 = applyImport(db2, rows.slice(1), map, "add");
+  const ok6 = r2.added === 0 && db2.films["kodak-portra-400@135"].count === 40;   // 20 + 20
+  const ok7 = db2.films["kodak-ektar-100@135"].count === 14;                      // 7 + 7
+
+  check("导入覆盖与累加", ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7,
+        "计数=" + ok1 + " 覆盖=" + ok2 + " 保住缺列=" + ok3 + " 覆盖有效期=" + ok4 +
+        " 新增=" + ok5 + " 累加=" + ok6 + " 累加二=" + ok7);
+} catch (e) { check("导入覆盖与累加", false, "抛异常 " + e.message); }
+
+/* ── 编码兜底：中文 Windows 的 Excel 导出 CSV 是 GBK，不是 UTF-8 ── */
+try {
+  /* "型号,数量\nKodak Portra 400,12\n" 的 GBK 字节。
+     这段字节是**非法 UTF-8**，所以严格解码一定会抛，兜底路径一定会被走到。 */
+  const GBK = [208, 205, 186, 197, 44, 202, 253, 193, 191, 10, 75, 111, 100, 97, 107,
+               32, 80, 111, 114, 116, 114, 97, 32, 52, 48, 48, 44, 49, 50, 10];
+  const text = decodeBytes(new Uint8Array(GBK).buffer);
+  const rows = parseDelimited(text, sniffDelim(text));
+  const ok1 = text.indexOf("型号,数量") === 0;
+  const ok2 = rows.length === 2 && rows[1][0] === "Kodak Portra 400" && rows[1][1] === "12";
+
+  /* UTF-8 + BOM 也要认（Excel 的另一种导出） */
+  const u8 = new TextEncoder().encode("\\uFEFF型号,数量\\nIlford HP5 Plus 400,9\\n");
+  const r2 = parseDelimited(decodeBytes(u8.buffer), ",");
+  const ok3 = r2[0][0] === "型号" && r2[1][1] === "9";
+
+  check("编码兜底（GBK）", ok1 && ok2 && ok3,
+        "GBK 认出来=" + ok1 + " 行对=" + ok2 + " UTF-8+BOM=" + ok3);
+} catch (e) { check("编码兜底（GBK）", false, "抛异常 " + e.message); }
+
+/* ── 装卷扣库存 ── */
+try {
+  save(demoData());
+  __setLoc("", "#/c/m6/load"); render();
+  __setValue("#f-stock", "Ilford HP5 Plus 400");
+  __setValue("#f-iso", "400");
+  __setValue("#f-ei", "");
+  __setValue("#f-shots", "0");
+  __setValue("#f-total", "36");
+  __setValue("#f-date", "2026-09-24");
+  __setValue("#f-note", "");
+  saveLoad("m6", false);
+  const ok1 = load().films["ilford-hp5-plus-400@135"].count === 11;    // 12 → 11
+
+  /* 编辑这一卷不是新装，不该再扣一次 */
+  saveLoad("m6", true);
+  const ok2 = load().films["ilford-hp5-plus-400@135"].count === 11;
+
+  /* 库存里没有的型号：不能因为库存对不上就拦住装卷 */
+  __setLoc("", "#/c/fm2/load"); render();
+  __setValue("#f-stock", "没有入库的某个卷");
+  __setValue("#f-shots", "0");
+  __setValue("#f-total", "36");
+  saveLoad("fm2", false);
+  const fm2 = load().cameras.fm2.loaded;
+  const ok3 = !!fm2 && fm2.stock === "没有入库的某个卷";
+
+  check("装卷扣库存", ok1 && ok2 && ok3,
+        "扣一卷=" + ok1 + " 编辑不重扣=" + ok2 + " 不对库存也能装=" + ok3);
+} catch (e) { check("装卷扣库存", false, "抛异常 " + e.message); }
+
 /* ── 护栏自测：护栏必须真的会响，否则等于没有 ──
    ⚠️ 样本必须**在运行时拼出来**，不能在源码里写成字面量。
    因为 _selftest.js 本身也在被扫描的文件列表里（上次泄露就在这个文件）。
@@ -498,8 +713,13 @@ global.__report = (rows, pass, fail) => {
 };
 
 try {
+  /* 先用 vm.Script 带文件名编译一次。
+     eval 抛语法错误时不给行号，而这个驱动有两万多字符 ——
+     没有行号基本没法定位，只能靠猜。带着文件名编译，报错就会指到 driver.js:NNN。 */
+  new (require("vm").Script)(js + driver, { filename: "driver.js" });
   eval(js + driver);
 } catch (e) {
-  console.error("脚本执行失败:", e.message, "\n", e.stack.split("\n").slice(0, 4).join("\n"));
+  console.error("脚本执行失败:", e.message);
+  if (e.stack) console.error(e.stack.split("\n").slice(0, 6).join("\n"));
   process.exit(1);
 }

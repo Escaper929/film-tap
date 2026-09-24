@@ -39,6 +39,19 @@ VIEWS = [
      "localStorage.setItem('filmtap.github', JSON.stringify({"
      "owner:'Escaper929', repo:'film-tap-data', path:'data.json',"
      "branch:'main', auto:true, token:fake}))"),
+    # 库存这一组要有数据才看得出排序和过期标签，所以都带 ?demo=1。
+    ("12-胶卷库存",     "/?demo=1&c=m6",         "#/films",       False),
+    ("13-新增库存",     "/?demo=1&c=m6",         "#/films/new",   False),
+    ("14-库存导入",     "/?demo=1&c=m6",         "#/films/import",False),
+    # 导入的第二步（对列）是整个过程里最容易出错的一屏，必须单独看一眼。
+    # 它要求先把表格喂给页面，所以脚本得在**导航之后**再注入 —— 见下面 after。
+    ("15-导入对列",     "/?demo=1&c=m6",         "#/films/import",False, None,
+     "loadImportText("
+     "'型号,数量,画幅,有效期,购入日期,单价,存放\\n'"
+     "+ 'Kodak Portra 400,12,135,2027-06,2026-03-12,78,冰箱\\n'"
+     "+ 'Fuji 分装,3,120,2026-11,2026-08-01,45,防潮箱\\n'"
+     "+ 'Adox CMS 20 II,2,,2030-01,,64,\\n'"
+     ", '我的库存.csv')"),
 ]
 
 
@@ -60,6 +73,7 @@ def main():
         for row in VIEWS:
             name, path, hash_, reset = row[0], row[1], row[2], row[3]
             inject = row[4] if len(row) > 4 else None
+            after  = row[5] if len(row) > 5 else None
 
             if reset or inject:
                 # 同一个浏览器上下文里本地存储是共享的，
@@ -72,6 +86,10 @@ def main():
             page.goto(BASE + path, wait_until="load")
             if hash_:
                 page.evaluate("h => { location.hash = h }", hash_)
+            # 导航会把页面里的中间状态（比如导入的第一步）清空，
+            # 所以需要"先到那一屏、再喂状态"的用 after，不能用 inject。
+            if after:
+                page.evaluate("s => eval(s)", after)
             page.wait_for_timeout(400)
             f = os.path.join(OUT, name + ".png")
             page.screenshot(path=f, full_page=True)
