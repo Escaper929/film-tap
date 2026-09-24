@@ -56,13 +56,39 @@ model/                3D 打印挂件
 
 ## 怎么用
 
+线上地址（GitHub Pages，发布自 `main` 分支根目录，推一次自动更新）：
+
+**https://escaper929.github.io/film-tap/**
+
+NFC 标签里写的就是这个地址加上机身 ID：
+
+```
+https://escaper929.github.io/film-tap/?c=<机身ID>
+```
+
+`#/settings` 页的「已登记的机身 ID」会列出每台机身对应的完整 URL，直接复制即可。
+
+本地预览：
+
 ```bash
-# 直接双击 index.html 就能用
-# 但离线缓存和 NFC 直达需要 http/https，所以建议起个静态服务：
 python -m http.server 8080
 ```
 
+> 直接双击 `index.html` 只能看界面 —— `file://` 下 Service Worker 不注册、离线缓存失效，
+> 而且标签网址会算成 `file:///C:/...`，写进标签毫无意义。
+
 打开后点「载入示例数据」可以先看看成品长什么样。
+
+## 一次性的准备（每台机身做一次）
+
+1. **登记机身** —— 起个短的机身 ID（`m6` / `fm2` / `xa2`），填名称、品牌、型号、画幅
+2. **写标签** —— 用 NFC Tools 写入一条 **URL** 记录，内容就是上面那串地址。
+   必须是 URI 记录且放**第一条**：iOS 后台读取只认 URI 记录，多条时只用第一条，
+   也不支持自定义 scheme（`film://` 这种写了也读不到）
+3. **打印挂件** —— `python model/build_fob.py` 出 `fob.stl`，层高 0.16mm，
+   打完**第 17 层**（Z = 2.72mm）暂停放入标签，再封顶 2.24mm
+
+标签只写这一次，之后换卷全在 App 里改。
 
 ## 自检与截图
 
