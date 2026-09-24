@@ -407,8 +407,10 @@ try {
     const okR2 = d1.cameras.r1.format === "120";
 
     stubFetch(REMOTE);
-    save({ version:2, cameras:{ mine:{ id:"mine", name:"本机自己的机身",
-                                      format:"135", loaded:null, history:[] } } });
+    save({ version:2,
+           cameras:{ mine:{ id:"mine", name:"本机自己的机身",
+                            format:"135", loaded:null, history:[] } },
+           films:{ "kodak-portra-400":{ stock:"Kodak Portra 400", count:12, where:"冰箱" } } });
     await ghRehydrate();
     const okR3 = GETS === 0;
     const d2 = load();
@@ -425,9 +427,25 @@ try {
     const okP3 = put.body.sha === "s1" && put.body.branch === "main";
     const okP4 = put.auth === "Bearer " + getGh().token;
     const okP5 = put.body.content.indexOf("fine-") < 0;      // 令牌绝不能混进请求体
-    check("上传内容与令牌不外泄", okP1 && okP2 && okP3 && okP4 && okP5,
+    const okP6 = !!(sent.films && sent.films["kodak-portra-400"].count === 12);
+    check("上传内容与令牌不外泄", okP1 && okP2 && okP3 && okP4 && okP5 && okP6,
           "成功=" + okP1 + " 内容对=" + okP2 + " 带sha=" + okP3 +
-          " 只在头=" + okP4 + " 不进body=" + okP5);
+          " 只在头=" + okP4 + " 不进body=" + okP5 + " 库存跟着走=" + okP6);
+
+    /* ── 同步层是「整库快照」，它不认识任何业务字段 ──
+       以后往库里加新东西（比如胶卷库存 films），只要做成 DB 的顶层字段，
+       就自动获得：上传、空库回灌、JSON 导出导入、NAS 同步，一行同步代码都不用改。
+       反过来说，如果 load/save/normalize 会削掉不认识的字段，
+       新数据就会被同步悄悄丢掉、且不报任何错 —— 所以这条必须钉住。 */
+    const dbx = load();
+    dbx.films = { "kodak-portra-400": { stock:"Kodak Portra 400", count:12, where:"冰箱" } };
+    save(dbx);
+    const again = load();
+    const okF1 = !!(again.films && again.films["kodak-portra-400"].count === 12);
+    const okF2 = !!normalize(JSON.parse(JSON.stringify(again))).films;
+    const okF3 = JSON.stringify(again).indexOf("冰箱") >= 0;   // 导出备份也带得走
+    check("新字段自动跟着同步", okF1 && okF2 && okF3,
+          "活过 load/save=" + okF1 + " 活过 normalize=" + okF2 + " 进导出=" + okF3);
 
     /* ── 自动同步开关的语义 ── */
     let g = getGh(); g.auto = false; saveGh(g);
