@@ -97,7 +97,7 @@ global.setTimeout = () => 0;
 global.fetch = () => Promise.reject(new Error("测试里没有打桩 fetch"));
 
 /* ── 注入测试驱动 ── */
-const driver = `
+const driver = String.raw`
 save(demoData());
 
 const CASES = [
@@ -381,19 +381,19 @@ try {
 try {
   /* ⚠️ 下面这段驱动本身是外层模板字符串的一部分，所以字符串里的反斜杠要写**两遍**：
      直接写 \r 会被外层模板先吃成真的回车，驱动源码就在字符串中间断掉，报
-     "Invalid or unexpected token"。写成 \\r 外层先还原成一个反斜杠，
-     驱动再把它当转义解释，才是我们想要的 CRLF。正则里的 \d 同理，要写 \\d。 */
-  const csv = '\\uFEFF型号,数量,画幅,备注\\r\\n'
-            + 'Kodak Portra 400,12,135,"冰箱冷藏, 别晒"\\r\\n'
-            + '"Fuji, 分装",3,120,""\\r\\n\\r\\n';
+     "Invalid or unexpected token"。写成 \r 外层先还原成一个反斜杠，
+     驱动再把它当转义解释，才是我们想要的 CRLF。正则里的 \d 同理，要写 \d。 */
+  const csv = '\uFEFF型号,数量,画幅,备注\r\n'
+            + 'Kodak Portra 400,12,135,"冰箱冷藏, 别晒"\r\n'
+            + '"Fuji, 分装",3,120,""\r\n\r\n';
   const rows = parseDelimited(csv, sniffDelim(csv));
 
   const ok1 = rows.length === 3;                                          // 尾部空行被丢掉
   const ok2 = rows[0].join("|") === "型号|数量|画幅|备注";                  // BOM 不会黏在表头上
   const ok3 = rows[1][3] === "冰箱冷藏, 别晒";                             // 引号里带分隔符
   const ok4 = rows[2][0] === "Fuji, 分装";                                 // 型号本身带逗号
-  const ok5 = sniffDelim("a\\tb\\tc\\n1\\t2\\t3") === "\\t";                // 从 Excel 粘贴是制表符
-  const ok6 = sniffDelim("a;b;c\\n1;2;3") === ";";                        // 欧洲区 Excel 用分号
+  const ok5 = sniffDelim("a\tb\tc\n1\t2\t3") === "\t";                // 从 Excel 粘贴是制表符
+  const ok6 = sniffDelim("a;b;c\n1;2;3") === ";";                        // 欧洲区 Excel 用分号
   const ok7 = parseDelimited('a,"说 ""引号"" 的写法"', ",")[0][1] === '说 "引号" 的写法';
 
   check("表格解析", ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7,
@@ -432,7 +432,7 @@ try {
               normMonth("2027年6月") === "2027-06" && normMonth("202706") === "2027-06";
   const ok6 = normDate("2026/3/12") === "2026-03-12" && normDate("2026-03") === "2026-03-01";
   const ok7 = normNum("¥78.5 元") === 78.5 && normNum("1,280") === 1280 && normNum("") === null;
-  const ok8 = /^\\d{4}-\\d{2}$/.test(normMonth("46000"));         // Excel 存的日期序列号
+  const ok8 = /^\d{4}-\d{2}$/.test(normMonth("46000"));         // Excel 存的日期序列号
   const ok9 = normMonth("不知道") === "" && normMonth("") === "";  // 看不懂就不猜
 
   check("字段归一化", ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9,
@@ -444,11 +444,11 @@ try {
 try {
   save(demoData());
   const rows = parseDelimited(
-    "型号,数量,画幅,有效期\\n" +
-    "Kodak Portra 400,20,135,2028-01\\n" +      // 已存在 → 覆盖成 20
-    "Kodak Ektar 100,7,135,\\n" +               // 已存在 → 覆盖成 7
-    "Lomography Color 100,5,135,2028-09\\n" +   // 新增
-    ",3,135,\\n",                               // 没型号 → 跳过
+    "型号,数量,画幅,有效期\n" +
+    "Kodak Portra 400,20,135,2028-01\n" +      // 已存在 → 覆盖成 20
+    "Kodak Ektar 100,7,135,\n" +               // 已存在 → 覆盖成 7
+    "Lomography Color 100,5,135,2028-09\n" +   // 新增
+    ",3,135,\n",                               // 没型号 → 跳过
     ",");
   const map = mapImport(rows[0]);
 
@@ -483,7 +483,7 @@ try {
   const ok2 = rows.length === 2 && rows[1][0] === "Kodak Portra 400" && rows[1][1] === "12";
 
   /* UTF-8 + BOM 也要认（Excel 的另一种导出） */
-  const u8 = new TextEncoder().encode("\\uFEFF型号,数量\\nIlford HP5 Plus 400,9\\n");
+  const u8 = new TextEncoder().encode("\uFEFF型号,数量\nIlford HP5 Plus 400,9\n");
   const r2 = parseDelimited(decodeBytes(u8.buffer), ",");
   const ok3 = r2[0][0] === "型号" && r2[1][1] === "9";
 
@@ -551,6 +551,36 @@ try {
         "能拦截 " + BAD_SAMPLES.filter(s => CRED_RULES.some(([re]) => re.test(s))).length +
         "/" + BAD_SAMPLES.length + " 不误报=" + quiet);
 } catch (e) { check("凭据护栏有效", false, "抛异常 " + e.message); }
+
+/* ── Service Worker 缓存版本 ──
+   改了 shell 里的文件（最常改的就是 index.html）却忘了动 sw.js，
+   浏览器就不会装新 SW —— 它靠 sw.js 的**字节**变化来判断要不要更新。
+   结果是线上明明是新版，手机却一直吃旧缓存里的老页面，而且**不报任何错**。
+   这个坑真踩过（改完 index.html 直接推，忘了动 sw.js）。
+
+   光靠"记得改"守不住，所以把 shell 内容的指纹写进 sw.js 里，这里算一遍比对：
+   对不上就自检失败，逼着人去改 sw.js 那一行 —— 而那一行一改，
+   sw.js 的字节就变了，浏览器才终于会去装新 SW。 */
+try {
+  const crypto = require("crypto");
+  const swText = fs.readFileSync(path.join(__dirname, "sw.js"), "utf8");
+  const norm = s => s.replace(/\r\n/g, "\n");   // 换行归一化，免得换台机器就误报
+  const shell = ["index.html", "manifest.webmanifest"]
+        .map(f => norm(fs.readFileSync(path.join(__dirname, f), "utf8"))).join("\n");
+  const fp = crypto.createHash("sha256").update(shell, "utf8").digest("hex");
+
+  const mC   = swText.match(/const\s+CACHE\s*=\s*"([^"]+)"/);
+  const mF   = swText.match(/const\s+SHELL_FP\s*=\s*"([^"]+)"/);
+  const got  = mF ? mF[1] : "";
+  const ver  = mC ? mC[1] : "";
+  const okVer = /-v\d+$/.test(ver);
+
+  check("SW 缓存版本同步", fp === got && okVer,
+        fp === got
+          ? "指纹一致 版本号=" + ver
+          : "对不上 —— 改了 shell 文件但没同步 sw.js。"
+            + "把 sw.js 里的 SHELL_FP 换成 " + fp + "，CACHE 版本号 +1");
+} catch (e) { check("SW 缓存版本同步", false, "抛异常 " + e.message); }
 
 /* ══════════════════════════════════════════════════════════
    私有仓库同步（GitHub Contents API）—— 需要网络，所以放在异步段里，
