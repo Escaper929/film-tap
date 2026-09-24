@@ -1,0 +1,15 @@
+# 行尾固定成 LF，别让不同机器上 checkout 出不同的字节。
+#
+# 为什么这个仓库要在意：sw.js 里存着 shell 文件的 SHA-256，自检会比对。
+# 如果 Windows 上 checkout 成 CRLF、macOS 上是 LF，同一份内容在两边算出
+# 不同的哈希，自检就会无缘无故地失败（自检里已经做了换行归一化兜底，
+# 但把根因固定住更省事）。
+* text=auto eol=lf
+
+# 截图是真二进制，别让 Git 自作聪明当文本转换。
+*.png binary
+*.jpg binary
+*.webp binary
+
+# 3D 打印件同理。
+*.stl binary
