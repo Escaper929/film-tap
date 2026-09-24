@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#17140f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="胶片簿">
-<title>胶片簿 · 机身登记</title>
+<meta name="apple-mobile-web-app-title" content="film-tap">
+<title>film-tap · 胶片机身登记</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23b3601a'/%3E%3Crect x='6' y='9' width='20' height='14' rx='2' fill='%23f7f3ec'/%3E%3Ccircle cx='16' cy='16' r='3.4' fill='%23b3601a'/%3E%3C/svg%3E">
 <link rel="manifest" href="./manifest.webmanifest">
 <style>
@@ -168,7 +168,8 @@ input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
 
 /* ══════════════ 数据层 ══════════════ */
 
-const KEY = "filmnfc.v1";
+const KEY     = "filmtap.v1";
+const KEY_OLD = "filmnfc.v1";   // 改名前用的键，只读一次把老数据接过来
 
 /* 画幅 → 默认张数，装卷时用来预填「总张数」。
    放在这里而不是挂在每个胶卷型号上，因为同一款卷在 135 和 120 上张数完全不同。 */
@@ -208,7 +209,21 @@ function normalize(d){
 
 function load(){
   try{
-    const d = JSON.parse(localStorage.getItem(KEY));
+    let raw = localStorage.getItem(KEY);
+    if (!raw){
+      /* 项目从 film-nfc 改名成 film-tap，存储键跟着换。
+         老键里有数据就接过来写进新键（先解析确认能用才搬），
+         免得改个名字把用户已有的机身全弄丢。 */
+      const legacy = localStorage.getItem(KEY_OLD);
+      if (legacy){
+        const probe = JSON.parse(legacy);
+        if (probe && typeof probe === "object" && probe.cameras){
+          localStorage.setItem(KEY, legacy);
+          raw = legacy;
+        }
+      }
+    }
+    const d = JSON.parse(raw);
     if (!d || typeof d !== "object" || !d.cameras) return blank();
     return normalize(d);
   }catch(e){ return blank(); }
@@ -418,7 +433,7 @@ function navBack(label, path){
 
 function renderHome(db){
   const cams = Object.values(db.cameras);
-  let h = '<div class="nav"><span class="title">胶片簿</span></div>';
+  let h = '<div class="nav"><span class="title">film-tap</span></div>';
   h += '<h1>机库</h1>';
   h += '<p class="sub">' + (cams.length ? "共 " + cams.length + " 台机身登记在册" : "还没有登记任何机身") + '</p>';
 
@@ -555,7 +570,7 @@ function renderSetup(db, id, isKnown){
 
   let h = exists
     ? navBack(c.name || "机身", "#/c/" + encodeURIComponent(id))
-    : (isKnown ? navBack("机库", "#/") : '<div class="nav"><span class="title">胶片簿</span></div>');
+    : (isKnown ? navBack("机库", "#/") : '<div class="nav"><span class="title">film-tap</span></div>');
 
   h += '<h1>' + (exists ? "编辑机身" : (isKnown ? "新挂件" : "登记机身")) + '</h1>';
   if (!exists)
@@ -812,7 +827,7 @@ function renderSettings(db){
   h += '<h2>危险操作</h2>'
      + '<button class="btn danger" onclick="wipe()">清空全部数据</button>';
 
-  h += '<div class="foot">胶片簿 · 数据全程留在本机<br>碰一下标签 › 编辑这卷 › 自动记天数和历史</div>';
+  h += '<div class="foot">film-tap · 数据全程留在本机<br>碰一下标签 › 编辑这卷 › 自动记天数和历史</div>';
   return h;
 }
 
@@ -987,12 +1002,21 @@ function fallbackCopy(txt){
    地址和账号由用户自己在设置里填，只存本机 localStorage。
    代码里永远不出现凭据 —— 这个项目是要发布出去的，硬编码等于公开泄密。 */
 
-const DAV_KEY = "filmnfc.webdav";
-const DAV_FILE = "filmnfc-backup.json";
+const DAV_KEY      = "filmtap.webdav";
+const DAV_FILE     = "filmtap-backup.json";
+/* 改名前的键与文件名。只在读取时兜底用一次：
+   老键/老备份还在就接过来，别让改个名字把已配好的同步和已有备份弄丢。 */
+const DAV_KEY_OLD  = "filmnfc.webdav";
+const DAV_FILE_OLD = "filmnfc-backup.json";
 
 function getDav(){
   try{
-    const c = JSON.parse(localStorage.getItem(DAV_KEY));
+    let raw = localStorage.getItem(DAV_KEY);
+    if (!raw){
+      const legacy = localStorage.getItem(DAV_KEY_OLD);
+      if (legacy){ localStorage.setItem(DAV_KEY, legacy); raw = legacy; }
+    }
+    const c = JSON.parse(raw);
     if (c && typeof c.url === "string" && c.url.trim()) return c;
   }catch(e){}
   return null;
@@ -1061,9 +1085,15 @@ async function restoreFromNas(){
 
   toast("读取中…");
   try{
-    const res = await fetch(davFile(c, DAV_FILE), { headers: davHeaders(c) });
+    let res = await fetch(davFile(c, DAV_FILE), { headers: davHeaders(c) });
     if (res.status === 401 || res.status === 403){ toast("认证失败，检查账号密码"); return; }
-    if (!res.ok){ toast("NAS 上没有找到备份（" + res.status + "）"); return; }
+    if (!res.ok){
+      /* 改名前的备份叫 filmnfc-backup.json。老备份还在的话就把它读出来，
+         否则用户会看到「没有备份」而以为自己从没同步过。 */
+      const old = await fetch(davFile(c, DAV_FILE_OLD), { headers: davHeaders(c) });
+      if (old.ok) res = old;
+      else { toast("NAS 上没有找到备份（" + res.status + "）"); return; }
+    }
 
     const remote = await res.json();
     if (!remote || !remote.cameras){ toast("备份格式不对，已取消"); return; }
@@ -1086,7 +1116,7 @@ function exportJSON(){
   const blob = new Blob([JSON.stringify(db, null, 2)], { type:"application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "胶片簿备份-" + todayLocal() + ".json";
+  a.download = "film-tap-备份-" + todayLocal() + ".json";
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
   toast("已导出");

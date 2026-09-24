@@ -206,6 +206,65 @@ const url = tagUrl("m6");
 const okUrl = url.indexOf("?c=m6") > 0 && url.indexOf("https://") === 0;
 check("标签 URL 生成", okUrl, url);
 
+/* ── 界面名字已统一成 film-tap ──
+   品牌名只出现在「首页顶栏」和「设置页页脚」；机身相关页面顶栏是返回箭头，
+   本来就该显示机身名而不是品牌名。 */
+try {
+  __setLoc("", "#/");         render(); const home = __app();
+  __setLoc("", "#/settings"); render(); const setn = __app();
+
+  const okHome = home.indexOf("film-tap") >= 0;
+  const okSet  = setn.indexOf("film-tap") >= 0;
+  const okOld  = home.indexOf("胶片簿") < 0 && setn.indexOf("胶片簿") < 0;
+  // 静态 HTML 里也不能再留旧名（含 <title> 与 iOS 主屏名）
+  const okHtml = html.indexOf("胶片簿") < 0 && html.indexOf("<title>film-tap") >= 0;
+
+  check("界面名字统一", okHome && okSet && okOld && okHtml,
+        "首页=" + okHome + " 设置页=" + okSet +
+        " 无旧名=" + okOld + " 静态页=" + okHtml);
+} catch (e) { check("界面名字统一", false, "抛异常 " + e.message); }
+
+/* ── 改名迁移：只留老键时，本机数据必须接过来 ──
+   项目从 film-nfc 改名成 film-tap，localStorage 键跟着换。
+   迁移写错 = 用户一觉醒来机身全没了，所以这条必须钉死。 */
+try {
+  localStorage.removeItem("filmtap.v1");
+  localStorage.setItem("filmnfc.v1", JSON.stringify({
+    version: 2,
+    cameras: { legacy1: { id: "legacy1", name: "迁移来的机身", format: "135",
+                          loaded: null, history: [] } }
+  }));
+
+  const d1  = load();
+  const ok1 = !!(d1.cameras.legacy1 && d1.cameras.legacy1.name === "迁移来的机身");
+  const ok2 = localStorage.getItem("filmtap.v1") !== null;      // 已落到新键
+
+  // 两个键都有数据时必须新键优先，绝不能被老键盖回去
+  localStorage.setItem("filmtap.v1", JSON.stringify({
+    version: 2,
+    cameras: { new1: { id: "new1", name: "新键的机身", format: "135",
+                       loaded: null, history: [] } }
+  }));
+  const d2  = load();
+  const ok3 = !!d2.cameras.new1 && !d2.cameras.legacy1;
+
+  check("改名迁移（本机数据）", ok1 && ok2 && ok3,
+        "接过来=" + ok1 + " 落新键=" + ok2 + " 新键优先=" + ok3);
+} catch (e) { check("改名迁移（本机数据）", false, "抛异常 " + e.message); }
+
+/* ── 改名迁移：已填好的 NAS 设置同样不能丢 ── */
+try {
+  localStorage.removeItem("filmtap.webdav");
+  localStorage.setItem("filmnfc.webdav",
+    JSON.stringify({ url: "https://nas.example.com/dav/x/", user: "u", pass: "p" }));
+
+  const c   = getDav();
+  const ok1 = !!c && c.url === "https://nas.example.com/dav/x/" && c.user === "u";
+  const ok2 = localStorage.getItem("filmtap.webdav") !== null;
+
+  check("改名迁移（NAS 设置）", ok1 && ok2, "读老键=" + ok1 + " 落新键=" + ok2);
+} catch (e) { check("改名迁移（NAS 设置）", false, "抛异常 " + e.message); }
+
 __report(REPORT, pass, fail);
 `;
 

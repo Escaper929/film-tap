@@ -1,4 +1,4 @@
-const CACHE = "filmnfc-v1";
+const CACHE = "filmtap-v1";
 const SHELL = ["./", "./index.html", "./manifest.webmanifest"];
 
 self.addEventListener("install", e => {
