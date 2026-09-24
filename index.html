@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#17140f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="胶片簿">
+<title>胶片簿 · 机身登记</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23b3601a'/%3E%3Crect x='6' y='9' width='20' height='14' rx='2' fill='%23f7f3ec'/%3E%3Ccircle cx='16' cy='16' r='3.4' fill='%23b3601a'/%3E%3C/svg%3E">
+<link rel="manifest" href="./manifest.webmanifest">
+<style>
+:root{
+  --bg:#f7f3ec; --surface:#ffffff; --surface-2:#efe8dc; --line:#ded4c4;
+  --ink:#221d17; --ink-2:#6d6355; --ink-3:#9c9081;
+  --accent:#b3601a; --accent-soft:#f6e6d4;
+  --warn:#a8710f; --warn-soft:#fbeed2;
+  --danger:#a8332a; --danger-soft:#fbe6e3;
+  --ok:#3f6b34; --ok-soft:#e6f0e0;
+  --radius:16px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#17140f; --surface:#211d18; --surface-2:#2b2620; --line:#3a332b;
+    --ink:#f0eae1; --ink-2:#a99d8c; --ink-3:#7a7061;
+    --accent:#e0a13f; --accent-soft:#3a2d18;
+    --warn:#d9a33c; --warn-soft:#3a2f16;
+    --danger:#e07b70; --danger-soft:#3a211e;
+    --ok:#8fbd7a; --ok-soft:#222d1c;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font:400 16px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro SC","PingFang SC","Helvetica Neue",Arial,sans-serif;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  min-height:100dvh;
+}
+#app{max-width:560px;margin:0 auto;padding:20px 18px 48px}
+a{color:var(--accent);text-decoration:none}
+
+/* 顶部导航 */
+.nav{display:flex;align-items:center;gap:10px;margin-bottom:22px;min-height:32px}
+.nav .back{font-size:15px;color:var(--accent);background:none;border:0;padding:6px 8px 6px 0;cursor:pointer;font-family:inherit}
+.nav .title{flex:1;font-size:15px;font-weight:500;color:var(--ink-2);text-align:right;letter-spacing:.02em}
+
+h1{font-size:26px;font-weight:500;margin:0 0 4px;letter-spacing:-.01em}
+h2{font-size:15px;font-weight:500;color:var(--ink-2);margin:28px 0 10px}
+.sub{font-size:14px;color:var(--ink-2);margin:0 0 20px}
+
+/* 卡片 */
+.card{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:18px;margin-bottom:12px;
+}
+.cam{display:flex;align-items:center;gap:14px;cursor:pointer}
+.cam .body{flex:1;min-width:0}
+.cam .name{font-size:17px;font-weight:500;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cam .roll{font-size:14px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cam .age{font-size:13px;color:var(--ink-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.cam .chev{color:var(--ink-3);font-size:18px;flex:none}
+
+/* 主展示区 */
+.hero{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:14px}
+.hero .top{padding:22px 20px 18px;border-bottom:1px solid var(--line)}
+.hero .stock{font-size:30px;font-weight:500;line-height:1.15;letter-spacing:-.015em;margin:0 0 10px;word-break:break-word}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:12.5px;padding:3px 9px;border-radius:999px;background:var(--surface-2);color:var(--ink-2);white-space:nowrap}
+.tag.push{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.tag.warn{background:var(--warn-soft);color:var(--warn);font-weight:500}
+
+.metrics{display:flex}
+.metric{flex:1;padding:16px 20px;border-right:1px solid var(--line)}
+.metric:last-child{border-right:0}
+.metric .k{font-size:12px;color:var(--ink-3);margin-bottom:5px}
+.metric .v{font-size:22px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.metric .v small{font-size:13px;font-weight:400;color:var(--ink-2);margin-left:2px}
+.metric .v.hot{color:var(--warn)}
+
+.note{padding:14px 20px;border-top:1px solid var(--line);font-size:14px;color:var(--ink-2);white-space:pre-wrap}
+
+/* 张数进度 */
+.filmbar{padding:15px 20px;border-top:1px solid var(--line)}
+.filmbar .track{height:7px;border-radius:999px;background:var(--surface-2);overflow:hidden}
+.filmbar .fill{height:100%;border-radius:999px;background:var(--accent);transition:width .18s ease}
+.filmbar .fill.full{background:var(--ok)}
+.filmbar .cap{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:9px;font-size:13px;color:var(--ink-2)}
+.filmbar .cap b{font-size:17px;font-weight:500;color:var(--ink);font-variant-numeric:tabular-nums}
+
+/* 统计 */
+.statgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
+.stat .n{font-size:27px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat .l{font-size:12.5px;color:var(--ink-3);margin-top:3px}
+.bar{height:7px;border-radius:999px;background:var(--surface-2);overflow:hidden;margin-top:2px}
+.bar i{display:block;height:100%;border-radius:999px;background:var(--accent)}
+
+/* 按钮 */
+.btn{
+  display:block;width:100%;padding:15px;border-radius:14px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink);font:500 16px/1 inherit;font-family:inherit;
+  cursor:pointer;text-align:center;margin-bottom:10px;
+}
+.btn:active{opacity:.65}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+@media (prefers-color-scheme: dark){.btn.primary{color:#1a130a}}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--accent);font-weight:400}
+.btn.danger{color:var(--danger);border-color:var(--line)}
+.row{display:flex;gap:10px}
+.row .btn{margin-bottom:10px}
+
+/* 表单 */
+label{display:block;font-size:13px;color:var(--ink-2);margin:16px 0 6px}
+input,textarea,select{
+  width:100%;padding:13px 14px;border-radius:12px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink);font:400 16px/1.4 inherit;font-family:inherit;
+  -webkit-appearance:none;appearance:none;
+}
+textarea{resize:vertical;min-height:76px}
+input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.chips{display:flex;gap:7px;overflow-x:auto;padding:2px 0 6px;margin:0 -18px;padding-left:18px;padding-right:18px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{
+  flex:none;font-size:13.5px;padding:8px 13px;border-radius:999px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink-2);white-space:nowrap;cursor:pointer;font-family:inherit;
+}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:500}
+
+/* 列表 */
+.list{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.item{padding:15px 18px;border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+.item .l1{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.item .l1 .a{font-size:15.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .l1 .b{font-size:13px;color:var(--ink-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.item .l2{font-size:13px;color:var(--ink-2);margin-top:4px}
+
+/* 空状态 */
+.empty{text-align:center;padding:44px 24px;color:var(--ink-3);font-size:15px;line-height:1.7}
+.empty .big{font-size:38px;margin-bottom:14px;opacity:.35}
+
+/* 提示条 */
+.banner{font-size:14px;padding:13px 16px;border-radius:12px;margin-bottom:12px;line-height:1.55}
+.banner.w{background:var(--warn-soft);color:var(--warn)}
+.banner.i{background:var(--accent-soft);color:var(--accent)}
+
+/* 吐司 */
+#toast{
+  position:fixed;left:50%;bottom:calc(28px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(12px);
+  background:var(--ink);color:var(--bg);font-size:14px;padding:11px 20px;border-radius:999px;
+  opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:99;max-width:88vw;text-align:center;
+}
+#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px}
+.foot{text-align:center;font-size:12.5px;color:var(--ink-3);margin-top:30px;line-height:1.8}
+.hint{font-size:12.5px;color:var(--ink-3);margin-top:7px;line-height:1.6}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+/* ══════════════ 数据层 ══════════════ */
+
+const KEY = "filmnfc.v1";
+
+/* 画幅 → 默认张数，装卷时用来预填「总张数」。
+   放在这里而不是挂在每个胶卷型号上，因为同一款卷在 135 和 120 上张数完全不同。 */
+const FORMATS = ["135","120","110","大画幅","其他"];
+const DEFAULT_FRAMES = { "135":36, "120":12, "110":24, "大画幅":1, "其他":36 };
+
+function blank(){ return { version:2, cameras:{} }; }
+
+/* 补齐缺失字段，让 v1 的老数据直接可用，不必写一次性迁移 */
+function normalizeRoll(r, camFormat){
+  if (!r) return null;
+  r.stock  = r.stock || "";
+  r.iso    = Number(r.iso) || null;
+  r.ei     = Number(r.ei)  || null;
+  r.shots  = Number(r.shots) || 0;
+  r.total  = Number(r.total) || (DEFAULT_FRAMES[camFormat] || 0);
+  r.note   = r.note || "";
+  r.filmId = r.filmId || filmId(r.stock);
+  return r;
+}
+
+function normalize(d){
+  d.version = 2;
+  for (const c of Object.values(d.cameras)){
+    c.id     = c.id || newCamId();
+    c.name   = c.name || "未命名机身";
+    c.note   = c.note || "";
+    c.brand  = c.brand || "";
+    c.model  = c.model || "";
+    c.format = FORMATS.indexOf(c.format) >= 0 ? c.format : "135";
+    c.history = Array.isArray(c.history) ? c.history : [];
+    c.loaded = normalizeRoll(c.loaded, c.format);
+    for (let i = 0; i < c.history.length; i++) c.history[i] = normalizeRoll(c.history[i], c.format);
+  }
+  return d;
+}
+
+function load(){
+  try{
+    const d = JSON.parse(localStorage.getItem(KEY));
+    if (!d || typeof d !== "object" || !d.cameras) return blank();
+    return normalize(d);
+  }catch(e){ return blank(); }
+}
+function save(d){
+  try{ localStorage.setItem(KEY, JSON.stringify(d)); }
+  catch(e){ toast("存储写入失败，可能是隐私模式"); }
+}
+
+/* ══════════════ 小工具 ══════════════ */
+
+const $ = s => document.querySelector(s);
+
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function toast(msg){
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>t.classList.remove("on"), 1900);
+}
+
+function todayLocal(){
+  const d = new Date();
+  const p = n => String(n).padStart(2,"0");
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate());
+}
+
+function daysSince(dateStr){
+  if (!dateStr) return null;
+  const p = dateStr.split("-").map(Number);
+  if (p.length !== 3 || p.some(isNaN)) return null;
+  const a = new Date(p[0], p[1]-1, p[2]);
+  const b = new Date();
+  const t0 = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+  const diff = Math.round((t0 - a) / 86400000);
+  return diff >= 0 ? diff : null;
+}
+
+function niceDate(s){
+  if (!s) return "—";
+  const p = s.split("-");
+  if (p.length !== 3) return s;
+  return p[0] + "年" + Number(p[1]) + "月" + Number(p[2]) + "日";
+}
+
+/* 实际曝光指数与标称 ISO 的档位差 */
+function pushPull(iso, ei){
+  if (!iso || !ei) return null;
+  const raw = Math.log2(ei / iso);
+  const st = Math.round(raw);
+  if (Math.abs(raw) < 0.5 || Math.abs(raw - st) > 0.05) return null;
+  return { stops: st, text: st > 0 ? ("推 " + st + " 档") : ("拉 " + (-st) + " 档") };
+}
+
+function ageTag(days){
+  if (days == null) return null;
+  if (days >= 365) return { cls:"warn", text:Math.floor(days/365)+" 年多没动过" };
+  if (days >= 180) return { cls:"warn", text:"该冲了" };
+  return null;
+}
+
+/* 这一卷拍了多少 —— 条 + 「还剩 N 张」 */
+function filmBar(shot, total){
+  const t = Number(total) || 0;
+  if (!t) return "";
+  const s = Math.max(0, Number(shot) || 0);
+  const done = s >= t;
+  const pct = Math.min(100, Math.round(s / t * 100));
+  return '<div class="filmbar">'
+       +   '<div class="track"><div class="fill' + (done ? ' full' : '') + '" style="width:' + pct + '%"></div></div>'
+       +   '<div class="cap"><span>' + (done ? "这卷拍满了，可以回卷" : "还剩 " + (t - s) + " 张") + '</span>'
+       +     '<span><b>' + s + '</b> / ' + t + ' 张</span></div>'
+       + '</div>';
+}
+
+function filmId(name){
+  return (name || "").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") || "roll";
+}
+
+function newCamId(){
+  return "cam-" + Math.random().toString(36).slice(2,7);
+}
+
+/* ══════════════ 胶卷库 ══════════════ */
+
+const FILMS = [
+  ["Kodak Portra 160",160],["Kodak Portra 400",400],["Kodak Portra 800",800],
+  ["Kodak Gold 200",200],["Kodak UltraMax 400",400],["Kodak ColorPlus 200",200],
+  ["Kodak Ektar 100",100],["Kodak Tri-X 400",400],["Kodak T-MAX 100",100],["Kodak T-MAX 400",400],
+  ["Ilford HP5 Plus 400",400],["Ilford FP4 Plus 125",125],["Ilford Delta 100",100],
+  ["Ilford Delta 400",400],["Ilford Delta 3200",3200],["Ilford XP2 Super 400",400],
+  ["Fujifilm C200",200],["Fujifilm Superia 400",400],["Fujifilm Pro 400H",400],
+  ["Fujifilm Acros II 100",100],["Fujifilm Velvia 50",50],["Fujifilm Provia 100F",100],
+  ["Cinestill 800T",800],["Cinestill 400D",400],
+  ["Kentmere 100",100],["Kentmere 400",400],
+  ["Fomapan 100",100],["Fomapan 200",200],["Fomapan 400",400],
+  ["乐凯 黑白 100",100],["乐凯 彩负 200",200],["上海 GP3 100",100],
+  ["Lomography Color 400",400],["Lomography Color 800",800]
+].map(([name,iso]) => ({name, iso}));
+
+/* ══════════════ 示例数据（只为让你先看到成品长什么样） ══════════════ */
+
+function daysAgo(n){
+  const x = new Date();
+  x.setDate(x.getDate() - n);
+  const p = v => String(v).padStart(2, "0");
+  return x.getFullYear() + "-" + p(x.getMonth() + 1) + "-" + p(x.getDate());
+}
+
+function demoData(){
+  const now = new Date().toISOString();
+  return {
+    version: 2,
+    demo: true,
+    cameras: {
+      m6: {
+        id: "m6", name: "Leica M6", note: "黑色 0.72 取景器", createdAt: now,
+        brand: "Leica", model: "M6", format: "135",
+        loaded: { stock:"Kodak Portra 400", iso:400, ei:1600, loadedAt:daysAgo(92),
+                  shots:24, total:36, note:"推到 1600 拍夜景，冲扫时记得加 2 档",
+                  filmId:"kodak-portra-400" },
+        history: [
+          { stock:"Ilford HP5 Plus 400", iso:400, ei:400, loadedAt:daysAgo(260),
+            unloadedAt:daysAgo(238), shots:36, total:36, note:"", filmId:"ilford-hp5-plus-400" },
+          { stock:"Fujifilm C200", iso:200, ei:200, loadedAt:daysAgo(420),
+            unloadedAt:daysAgo(300), shots:36, total:36, note:"", filmId:"fujifilm-c200" }
+        ]
+      },
+      fm2: {
+        id: "fm2", name: "尼康 FM2", note: "银色，挂 50/1.4", createdAt: now,
+        brand: "Nikon", model: "FM2", format: "135",
+        loaded: { stock:"Ilford HP5 Plus 400", iso:400, ei:400, loadedAt:daysAgo(12),
+                  shots:8, total:36, note:"", filmId:"ilford-hp5-plus-400" },
+        history: [
+          { stock:"Kodak Tri-X 400", iso:400, ei:400, loadedAt:daysAgo(120),
+            unloadedAt:daysAgo(15), shots:36, total:36, note:"", filmId:"kodak-tri-x-400" }
+        ]
+      },
+      xa2: {
+        id: "xa2", name: "奥林巴斯 XA2", note: "", createdAt: now,
+        brand: "Olympus", model: "XA2", format: "135",
+        loaded: { stock:"Kodak ColorPlus 200", iso:200, ei:200, loadedAt:daysAgo(214),
+                  shots:31, total:36, note:"口袋里还有 5 张没拍完", filmId:"kodak-colorplus-200" },
+        history: []
+      },
+      rollei: {
+        id: "rollei", name: "禄来 3.5F", note: "6x6，腰平取景", createdAt: now,
+        brand: "Rollei", model: "3.5F", format: "120",
+        loaded: { stock:"Ilford Delta 100", iso:100, ei:100, loadedAt:daysAgo(40),
+                  shots:5, total:12, note:"12 张一卷，省着拍", filmId:"ilford-delta-100" },
+        history: [
+          { stock:"Kodak Portra 160", iso:160, ei:160, loadedAt:daysAgo(150),
+            unloadedAt:daysAgo(96), shots:12, total:12, note:"", filmId:"kodak-portra-160" }
+        ]
+      }
+    }
+  };
+}
+
+function loadDemo(){
+  const d = load();
+  if (Object.keys(d.cameras).length && !confirm("这会覆盖现在已有的数据，继续？")) return;
+  save(demoData());
+  toast("已载入 4 台示例机身");
+  go("#/");
+}
+
+/* ══════════════ 路由 ══════════════ */
+
+function parseRoute(){
+  const h = (location.hash || "").replace(/^#\/?/, "");
+  const seg = h.split("/").filter(Boolean).map(decodeURIComponent);
+
+  // 标签 URL 形态：https://…/?c=m6 —— 没有 hash 时按 c 参数跳转
+  const c = new URLSearchParams(location.search).get("c");
+  if (!seg.length && c){
+    const id = String(c).trim().slice(0,40) || newCamId();
+    history.replaceState(null, "", location.pathname + "#/c/" + encodeURIComponent(id));
+    return { view:"cam", id };
+  }
+
+  if (!seg.length) return { view:"home" };
+  if (seg[0] === "settings") return { view:"settings" };
+  if (seg[0] === "stats")    return { view:"stats" };
+  if (seg[0] === "c" && seg[1]){
+    if (seg[2] === "setup")  return { view:"setup",   id:seg[1] };
+    if (seg[2] === "load")   return { view:"load",    id:seg[1] };
+    if (seg[2] === "edit")   return { view:"edit",    id:seg[1] };
+    if (seg[2] === "history")return { view:"history", id:seg[1] };
+    return { view:"cam", id:seg[1] };
+  }
+  return { view:"home" };
+}
+
+function go(path){ location.hash = path; }
+
+/* ══════════════ 视图 ══════════════ */
+
+function navBack(label, path){
+  return '<div class="nav"><button class="back" onclick="go(\'' + path + '\')">‹ ' + esc(label) + '</button></div>';
+}
+
+function renderHome(db){
+  const cams = Object.values(db.cameras);
+  let h = '<div class="nav"><span class="title">胶片簿</span></div>';
+  h += '<h1>机库</h1>';
+  h += '<p class="sub">' + (cams.length ? "共 " + cams.length + " 台机身登记在册" : "还没有登记任何机身") + '</p>';
+
+  if (db.demo) h += '<div class="banner i">这是示例数据，方便你先看看成品长什么样。去「设置与备份」里清空，就能开始录自己的机身。</div>';
+
+  if (!cams.length){
+    h += '<div class="empty"><div class="big">▢</div>'
+       + '每台相机挂一个 NFC 挂件，<br>碰一下就知道里面装的什么卷。</div>';
+  } else {
+    h += '<div class="list">';
+    for (const c of cams){
+      const r = c.loaded;
+      const d = r && r.loadedAt ? daysSince(r.loadedAt) : null;
+      const stockTxt = r && r.stock ? r.stock : "空机";
+      const warn = d != null && d >= 180;
+      const bar = (r && r.total)
+        ? '<div class="bar" style="margin-top:7px"><i style="width:' +
+          Math.min(100, Math.round((r.shots || 0) / r.total * 100)) + '%"></i></div>'
+        : '';
+      h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(c.id) + '\')">'
+         +   '<div class="body">'
+         +     '<div class="name">' + esc(c.name || "未命名机身") + '</div>'
+         +     '<div class="roll">' + esc(stockTxt)
+         +       (r && r.total ? ' · ' + (r.shots || 0) + '/' + r.total + ' 张' : '')
+         +       (r && r.note ? ' · ' + esc(r.note.slice(0,20)) : '') + '</div>'
+         +     bar
+         +   '</div>'
+         +   '<div class="age"' + (warn ? ' style="color:var(--warn)"' : '') + '>'
+         +     (d != null ? d + " 天" : "") + '</div>'
+         +   '<div class="chev">›</div>'
+         + '</div>';
+    }
+    h += '</div>';
+  }
+
+  h += '<div style="height:16px"></div>';
+  if (!cams.length){
+    h += '<button class="btn primary" onclick="addCamera()">＋ 登记第一台机身</button>';
+    h += '<button class="btn" onclick="loadDemo()">载入示例数据，先看看效果</button>';
+    h += '<button class="btn ghost" onclick="go(\'#/settings\')">设置与备份</button>';
+  } else {
+    h += '<button class="btn" onclick="addCamera()">＋ 添加机身</button>';
+    h += '<div class="row">'
+       +   '<button class="btn" onclick="go(\'#/stats\')">统计</button>'
+       +   '<button class="btn" onclick="go(\'#/settings\')">设置与备份</button>'
+       + '</div>';
+    h += '<button class="btn ghost" onclick="loadDemo()">重载示例数据</button>';
+  }
+  h += '<div class="foot">碰一下挂件 › 直接跳到那台机身 › 自动记天数和历史<br>'
+     +   '标签里要写的网址：<span class="mono">' + esc(tagBase()) + '?c=机身ID</span></div>';
+  return h;
+}
+
+function renderCam(db, id){
+  const c = db.cameras[id];
+  if (!c) return renderSetup(db, id, true);
+
+  const r = c.loaded;
+  const d = r && r.loadedAt ? daysSince(r.loadedAt) : null;
+  const pp = r ? pushPull(r.iso, r.ei) : null;
+  const at = ageTag(d);
+
+  let h = navBack("机库", "#/");
+  h += '<h1>' + esc(c.name || "未命名机身") + '</h1>';
+  const subBits = [];
+  if (c.format) subBits.push(c.format);
+  if (c.brand || c.model) subBits.push([c.brand, c.model].filter(Boolean).join(" "));
+  if (c.note) subBits.push(c.note);
+  h += '<p class="sub">' + esc(subBits.length ? subBits.join(" · ") : "机身编号 " + c.id) + '</p>';
+
+  if (!r){
+    h += '<div class="card" style="text-align:center;padding:34px 20px">'
+       +   '<div style="font-size:15px;color:var(--ink-2);margin-bottom:18px">这台机身当前是空的</div>'
+       + '</div>';
+    h += '<button class="btn primary" onclick="go(\'#/c/' + encodeURIComponent(id) + '/load\')">装一卷</button>';
+    h += '<button class="btn ghost" onclick="go(\'#/c/' + encodeURIComponent(id) + '/setup\')">编辑机身信息</button>';
+  } else {
+    if (at) h += '<div class="banner w">这卷已经装了 ' + d + " 天——" + esc(at.text) + '。</div>';
+
+    h += '<div class="hero">';
+    h +=   '<div class="top">'
+       +     '<div class="stock">' + esc(r.stock || "未填写型号") + '</div>'
+       +     '<div class="tags">'
+       +       (r.iso ? '<span class="tag">ISO ' + r.iso + '</span>' : '')
+       +       (r.ei && r.ei !== r.iso ? '<span class="tag push">EI ' + r.ei + '</span>' : '')
+       +       (pp ? '<span class="tag push">' + pp.text + '</span>' : '')
+       +       (r.total ? '<span class="tag">' + esc(c.format) + ' · ' + r.total + ' 张</span>' : '')
+       +       (at ? '<span class="tag warn">偏久</span>' : '')
+       +     '</div>'
+       +   '</div>';
+    h +=   '<div class="metrics">'
+       +     '<div class="metric"><div class="k">装卷</div><div class="v" style="font-size:15px;line-height:1.5">'
+       +       esc(r.loadedAt || "—") + '</div></div>'
+       +     '<div class="metric"><div class="k">已装</div><div class="v' + (at ? " hot" : "") + '">'
+       +       (d != null ? d + '<small>天</small>' : '—') + '</div></div>'
+       +   '</div>';
+    h += filmBar(r.shots, r.total);
+    if (r.note) h += '<div class="note">' + esc(r.note) + '</div>';
+    h += '</div>';
+
+    if (pp) h += '<div class="banner i">这卷按 EI ' + r.ei + ' 拍（' + pp.text + '），送冲扫时记得跟店家说一声。</div>';
+
+    const full = r.total && r.shots >= r.total;
+    h += '<button class="btn primary"' + (full ? ' disabled style="opacity:.4"' : '')
+       +   ' onclick="advanceShot(\'' + id + '\')">' + (full ? "这卷已经拍满" : "过片 ＋1") + '</button>';
+    h += '<div class="row">'
+       +   '<button class="btn" onclick="go(\'#/c/' + encodeURIComponent(id) + '/load\')">换一卷</button>'
+       +   '<button class="btn" onclick="go(\'#/c/' + encodeURIComponent(id) + '/edit\')">编辑这卷</button>'
+       + '</div>';
+    h += '<button class="btn ghost" onclick="copySlip(\'' + id + '\')">复制冲扫备注</button>';
+  }
+
+  h += '<h2>机身</h2><div class="list">';
+  const camLine = [c.format, [c.brand, c.model].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+  h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(id) + '/setup\')">'
+     +   '<div class="body"><div class="name">编辑机身信息</div>'
+     +   '<div class="roll">' + esc(camLine || "填写品牌、型号、画幅") + '</div></div>'
+     +   '<div class="chev">›</div></div>';
+  h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(id) + '/history\')">'
+     +   '<div class="body"><div class="name">拍过的卷</div>'
+     +   '<div class="roll">共 ' + (c.history ? c.history.length : 0) + ' 卷</div></div>'
+     +   '<div class="chev">›</div></div>';
+  h += '<div class="item cam" onclick="go(\'#/settings\')">'
+     +   '<div class="body"><div class="name">标签 URL</div>'
+     +   '<div class="roll mono">' + esc(tagUrl(id)) + '</div></div>'
+     +   '<div class="chev">›</div></div>';
+  h += '</div>';
+  return h;
+}
+
+function renderSetup(db, id, isKnown){
+  const c = db.cameras[id];
+  const exists = !!c;
+
+  let h = exists
+    ? navBack(c.name || "机身", "#/c/" + encodeURIComponent(id))
+    : (isKnown ? navBack("机库", "#/") : '<div class="nav"><span class="title">胶片簿</span></div>');
+
+  h += '<h1>' + (exists ? "编辑机身" : (isKnown ? "新挂件" : "登记机身")) + '</h1>';
+  if (!exists)
+    h += '<div class="banner i">这个挂件还没登记。给它起个名字，以后碰一下就能看到里面装了什么。</div>';
+
+  h += '<label>机身名称</label>'
+     + '<input id="f-name" placeholder="例如 Leica M6 / 尼康 FM2" autocomplete="off" value="' + esc(exists ? c.name : "") + '">';
+  h += '<label>品牌（可选）</label>'
+     + '<input id="f-brand" placeholder="例如 Leica / Nikon / 禄来" autocomplete="off" value="' + esc(exists ? c.brand : "") + '">';
+  h += '<label>型号（可选）</label>'
+     + '<input id="f-model" placeholder="例如 M6 / FM2 / 3.5F" autocomplete="off" value="' + esc(exists ? c.model : "") + '">';
+
+  h += '<label>画幅</label><div class="chips" id="fmtchips">';
+  for (const f of FORMATS){
+    const on = ((exists && c.format) || "135") === f ? " on" : "";
+    h += '<button class="chip' + on + '" onclick="pickFormat(this)">' + esc(f) + '</button>';
+  }
+  h += '</div>';
+  h += '<div class="hint">画幅决定装卷时预填的张数 —— 135 预填 36 张，120 预填 12 张。</div>';
+
+  h += '<label>机身备注（可选）</label>'
+     + '<input id="f-cnote" placeholder="例如 黑色 0.72 取景器" autocomplete="off" value="' + esc(exists ? c.note : "") + '">';
+  h += '<div style="height:22px"></div>';
+  h += '<button class="btn primary" onclick="saveSetup(\'' + id + '\')">保存</button>';
+  h += '<div class="hint">挂件 ID：<span class="mono">' + esc(id) + '</span>，这是标签里的唯一标识，写卡时用得到。</div>';
+  return h;
+}
+
+function pickFormat(el){
+  document.querySelectorAll("#fmtchips .chip").forEach(x => x.classList.remove("on"));
+  el.classList.add("on");
+}
+
+function renderLoad(db, id, isEdit){
+  const c = db.cameras[id];
+  const r = (c && c.loaded) || {};
+  const hasRoll = !!r.stock;
+
+  let h = navBack(c ? (c.name || "机身") : "机库", "#/c/" + encodeURIComponent(id));
+  h += '<h1>' + (isEdit ? "编辑这卷" : (hasRoll ? "换一卷" : "装一卷")) + '</h1>';
+  if (!isEdit && hasRoll) h += '<div class="banner i">换卷会把当前这卷（' + esc(r.stock) + '）记进历史。</div>';
+
+  h += '<label>胶卷型号</label>';
+  h += '<div class="chips" id="filmchips">';
+  for (const f of FILMS){
+    const on = f.name === r.stock ? " on" : "";
+    h += '<button class="chip' + on + '" onclick="pickFilm(this,\'' + f.name.replace(/'/g,"\\'") + '\',' + f.iso + ')">'
+       + esc(f.name) + '</button>';
+  }
+  h += '</div>';
+  h += '<input id="f-stock" placeholder="也可以直接输入型号" autocomplete="off" value="' + esc(r.stock || "") + '">';
+
+  h += '<label>标称 ISO</label>'
+     + '<input id="f-iso" type="number" inputmode="numeric" placeholder="400" value="' + esc(r.iso || "") + '" oninput="updatePP()">';
+
+  h += '<label>实际拍摄 EI（按标称 ISO 拍就不用填）</label>'
+     + '<input id="f-ei" type="number" inputmode="numeric" placeholder="1600" value="' + esc(r.ei || "") + '" oninput="updatePP()">'
+     + '<div class="hint" id="pphint">填了 EI 会自动算推拉档位。</div>';
+
+  h += '<label>装卷日期</label>'
+     + '<input id="f-date" type="date" value="' + esc(r.loadedAt || todayLocal()) + '">';
+
+  const camFmt = (c && c.format) || "135";
+  const defTotal = Number(r.total) || DEFAULT_FRAMES[camFmt] || 36;
+  h += '<label>这一卷总共多少张</label>'
+     + '<input id="f-total" type="number" inputmode="numeric" value="' + defTotal + '">'
+     + '<div class="hint">按机身画幅 ' + esc(camFmt) + ' 预填成 ' + defTotal + ' 张 —— '
+     +   '135 常见 36 或 24；120 要看画幅：6x6 是 12、6x7 是 10、645 是 16。不对就改。</div>';
+
+  h += '<label>已经拍了多少张（可选）</label>'
+     + '<input id="f-shots" type="number" inputmode="numeric" placeholder="0" value="' + esc(r.shots || "") + '">';
+
+  h += '<label>备注（可选）</label>'
+     + '<textarea id="f-note" placeholder="例如 推到 1600 拍夜景，冲扫时加 2 档">' + esc(r.note || "") + '</textarea>';
+
+  h += '<div style="height:22px"></div>';
+  h += '<button class="btn primary" onclick="saveLoad(\'' + id + '\',' + (isEdit ? "true" : "false") + ')">'
+     + (isEdit ? "保存" : "确认装卷") + '</button>';
+  if (isEdit && !r.stock){
+    h += '<button class="btn danger" onclick="clearFilm(\'' + id + '\')">标记为空机</button>';
+  }
+  return h;
+}
+
+function renderHistory(db, id){
+  const c = db.cameras[id];
+  const list = (c && c.history) ? c.history.slice().reverse() : [];
+  let h = navBack(c ? (c.name || "机身") : "机库", "#/c/" + encodeURIComponent(id));
+  h += '<h1>拍过的卷</h1>';
+  h += '<p class="sub">' + (list.length ? "共 " + list.length + " 卷" : "还没有记录") + '</p>';
+
+  if (!list.length){
+    h += '<div class="empty"><div class="big">▢</div>换卷之后，上一卷会自动记到这里。</div>';
+  } else {
+    h += '<div class="list">';
+    for (const r of list){
+      const pp = pushPull(r.iso, r.ei);
+      const span = (r.loadedAt || "?") + " → " + (r.unloadedAt || "?");
+      const dur = (r.loadedAt && r.unloadedAt) ? daysSince2(r.loadedAt, r.unloadedAt) : null;
+      h += '<div class="item">'
+         +   '<div class="l1"><span class="a">' + esc(r.stock || "未填写") + '</span>'
+         +     '<span class="b">' + (dur != null ? dur + " 天" : "") + '</span></div>'
+         +   '<div class="l2">' + esc(span)
+         +     (r.iso ? ' · ISO ' + r.iso : "") + (pp ? ' · ' + pp.text : "")
+         +     (r.total ? ' · ' + (r.shots || 0) + '/' + r.total + ' 张' : "") + '</div>'
+         +   (r.note ? '<div class="l2" style="color:var(--ink-3)">' + esc(r.note) + '</div>' : '')
+         + '</div>';
+    }
+    h += '</div>';
+  }
+  return h;
+}
+
+function daysSince2(a, b){
+  const pa = a.split("-").map(Number), pb = b.split("-").map(Number);
+  const da = new Date(pa[0],pa[1]-1,pa[2]), dbb = new Date(pb[0],pb[1]-1,pb[2]);
+  const n = Math.round((dbb-da)/86400000);
+  return n >= 0 ? n : null;
+}
+
+function renderStats(db){
+  const cams = Object.values(db.cameras);
+
+  let used = 0, shots = 0, capacity = 0;
+  const stockCount = {};
+  const tally = r => {
+    if (!r) return;
+    shots    += Number(r.shots) || 0;
+    capacity += Number(r.total) || 0;
+    if (r.stock) stockCount[r.stock] = (stockCount[r.stock] || 0) + 1;
+  };
+
+  for (const c of cams){
+    for (const r of (c.history || [])){ used++; tally(r); }
+    if (c.loaded) tally(c.loaded);
+  }
+  const loadedCams = cams.filter(c => c.loaded).length;
+  const top = Object.entries(stockCount).sort((a,b) => b[1]-a[1]).slice(0,5);
+
+  let h = navBack("机库", "#/");
+  h += '<h1>统计</h1>';
+
+  if (!cams.length){
+    h += '<p class="sub">还没有数据</p>';
+    h += '<div class="empty"><div class="big">▢</div>登记机身、开始装卷之后，<br>这里会累积出数字。</div>';
+    return h;
+  }
+
+  h += '<p class="sub">共 ' + cams.length + ' 台机身 · ' + loadedCams + ' 台装着卷</p>';
+
+  h += '<div class="statgrid">'
+     +   '<div class="stat"><div class="n">' + cams.length + '</div><div class="l">机身总数</div></div>'
+     +   '<div class="stat"><div class="n">' + loadedCams + '</div><div class="l">当前有卷</div></div>'
+     +   '<div class="stat"><div class="n">' + used + '</div><div class="l">已用胶卷</div></div>'
+     +   '<div class="stat"><div class="n">' + shots + '</div><div class="l">累计快门</div></div>'
+     + '</div>';
+
+  if (capacity > 0){
+    h += '<div class="banner i">按满卷算能拍 ' + capacity + ' 张，已经拍了 ' + shots + ' 张，'
+       +   '大约走完 ' + Math.round(Math.min(1, shots / capacity) * 100) + '%。</div>';
+  }
+
+  if (top.length){
+    h += '<h2>常用胶卷 Top ' + top.length + '</h2><div class="list">';
+    for (const [name, n] of top){
+      h += '<div class="item"><div class="l1">'
+         +   '<span class="a">' + esc(name) + '</span>'
+         +   '<span class="b">' + n + ' 卷</span></div></div>';
+    }
+    h += '</div>';
+  }
+
+  h += '<h2>机身状态</h2><div class="list">';
+  for (const c of cams){
+    const r = c.loaded;
+    const d = r && r.loadedAt ? daysSince(r.loadedAt) : null;
+    const pct = r && r.total ? Math.min(100, Math.round((r.shots || 0) / r.total * 100)) : null;
+    h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(c.id) + '\')">'
+       +   '<div class="body">'
+       +     '<div class="name">' + esc(c.name || "未命名机身") + '</div>'
+       +     '<div class="roll">' + (r
+                ? esc(r.stock || "未填写") + (r.total ? ' · ' + (r.shots || 0) + '/' + r.total + ' 张' : '')
+                : "空机") + '</div>'
+       +     (pct === null ? '' : '<div class="bar" style="margin-top:7px"><i style="width:' + pct + '%"></i></div>')
+       +   '</div>'
+       +   '<div class="age"' + (d != null && d >= 180 ? ' style="color:var(--warn)"' : '') + '>'
+       +     (d != null ? d + " 天" : "") + '</div>'
+       +   '<div class="chev">›</div>'
+       + '</div>';
+  }
+  h += '</div>';
+
+  h += '<div class="foot">统计只算这台设备上的数据<br>导出备份时会一并带走</div>';
+  return h;
+}
+
+function renderSettings(db){
+  const n = Object.keys(db.cameras).length;
+  let h = navBack("机库", "#/");
+  h += '<h1>设置</h1>';
+
+  h += '<h2>备份</h2>'
+     + '<button class="btn" onclick="exportJSON()">导出备份（JSON）</button>'
+     + '<button class="btn" onclick="importJSON()">导入备份</button>'
+     + '<div class="hint">数据默认只存在这台设备的浏览器里。换手机、清缓存之前先导一份出来。</div>';
+
+  const dav = getDav();
+  h += '<h2>同步到自己的 NAS（可选）</h2>';
+  h += '<div class="card" style="padding:16px 18px">';
+  h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
+     + '填一个 WebDAV 目录地址，就能把数据备份到自己的 NAS（群晖、坚果云等都支持）。'
+     + '地址和账号只留在这台设备上，<b>不会写进代码，也不会随网页发布出去</b>。</div>';
+  h += '<label>WebDAV 目录地址</label>'
+     + '<input id="dav-url" placeholder="https://nas.example.com/dav/film/" autocomplete="off" spellcheck="false" value="' + esc(dav ? dav.url : "") + '">';
+  h += '<label>用户名（可选）</label>'
+     + '<input id="dav-user" autocomplete="off" value="' + esc(dav ? dav.user : "") + '">';
+  h += '<label>密码 / 应用专用密码（可选）</label>'
+     + '<input id="dav-pass" type="password" autocomplete="new-password" placeholder="'
+     +   (dav && dav.pass ? "已保存，留空就不改" : "") + '">';
+  h += '<div class="hint">建议给 NAS 单独建一个受限账号，别拿主账号密码填这儿。</div>';
+  h += '</div>';
+  h += '<button class="btn' + (dav ? "" : " primary") + '" onclick="saveDavFromForm()">保存同步设置</button>';
+  if (dav){
+    h += '<div class="row">'
+       +   '<button class="btn" onclick="syncToNas()">立即同步</button>'
+       +   '<button class="btn" onclick="restoreFromNas()">从 NAS 恢复</button>'
+       + '</div>';
+    h += '<button class="btn ghost" onclick="clearDavSettings()">清除同步凭据</button>';
+  }
+
+  h += '<h2>给 NFC 标签写什么</h2>';
+  h += '<div class="card" style="padding:16px 18px">';
+  h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.8">'
+     + '用 NFC Tools 向标签写入一条 <b>URL</b> 记录，格式是：</div>';
+  h += '<div class="mono" style="margin:12px 0;padding:12px 14px;background:var(--surface-2);border-radius:10px;word-break:break-all">'
+     + esc(tagBase()) + '?c=<b>机身ID</b></div>';
+  h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.8">'
+     + '机身ID 用短一点、好记的英文，比如 <span class="mono">m6</span>、<span class="mono">fm2</span>、<span class="mono">xa2</span>。'
+     + '一台机身写一次就够了，之后换卷都不用再碰标签。</div>';
+  h += '</div>';
+
+  if (n){
+    h += '<h2>已登记的机身 ID</h2><div class="list">';
+    for (const c of Object.values(db.cameras)){
+      h += '<div class="item"><div class="l1">'
+         + '<span class="a">' + esc(c.name || "未命名") + '</span>'
+         + '<span class="b mono">' + esc(c.id) + '</span></div>'
+         + '<div class="l2 mono" style="color:var(--ink-3);word-break:break-all">' + esc(tagUrl(c.id)) + '</div>'
+         + '</div>';
+    }
+    h += '</div>';
+  }
+
+  h += '<h2>危险操作</h2>'
+     + '<button class="btn danger" onclick="wipe()">清空全部数据</button>';
+
+  h += '<div class="foot">胶片簿 · 数据全程留在本机<br>碰一下标签 › 编辑这卷 › 自动记天数和历史</div>';
+  return h;
+}
+
+function tagBase(){
+  return location.origin + location.pathname.replace(/[^/]*$/, "");
+}
+function tagUrl(id){
+  return tagBase() + "?c=" + encodeURIComponent(id);
+}
+
+/* ══════════════ 动作 ══════════════ */
+
+function addCamera(){
+  const name = prompt("机身名称？", "");
+  if (name === null) return;
+  const db = load();
+  const id = newCamId();
+  db.cameras[id] = { id, name: name.trim() || "未命名机身", note:"", loaded:null, history:[], createdAt:new Date().toISOString() };
+  save(db);
+  go("#/c/" + encodeURIComponent(id));
+}
+
+function saveSetup(id){
+  const db = load();
+  const name  = $("#f-name").value.trim();
+  const note  = $("#f-cnote").value.trim();
+  const brand = $("#f-brand").value.trim();
+  const model = $("#f-model").value.trim();
+  const onFmt = document.querySelector("#fmtchips .chip.on");
+  const format = onFmt ? onFmt.textContent.trim() : "135";
+
+  if (!name){ toast("先起个名字"); return; }
+
+  const isNew = !db.cameras[id];
+  if (isNew) db.cameras[id] = { id, loaded:null, history:[], createdAt:new Date().toISOString() };
+  Object.assign(db.cameras[id], { name, note, brand, model, format });
+  save(db);
+  toast(isNew ? "已登记" : "已保存");
+  // 新挂件第一次碰：起完名直接接「填当前装的什么卷」，省一步
+  go("#/c/" + encodeURIComponent(id) + (isNew && !db.cameras[id].loaded ? "/load" : ""));
+}
+
+function pickFilm(el, name, iso){
+  document.querySelectorAll("#filmchips .chip").forEach(c => c.classList.remove("on"));
+  el.classList.add("on");
+  $("#f-stock").value = name;
+  $("#f-iso").value = iso;
+  updatePP();
+}
+
+/* 编辑 ISO / EI 时实时显示推拉档位 */
+function updatePP(){
+  const el = $("#pphint");
+  if (!el) return;
+  const iso = Number($("#f-iso").value) || 0;
+  const ei  = Number($("#f-ei").value) || 0;
+  const pp  = pushPull(iso, ei);
+  if (pp){
+    el.textContent = "会按「" + pp.text + "」记录，送冲扫时会提醒你交代店家。";
+    el.style.color = "var(--accent)";
+  } else {
+    el.textContent = "填了 EI 会自动算推拉档位。";
+    el.style.color = "";
+  }
+}
+
+/* 进装卷/编辑表单后：算一次推拉提示，必要时把选中的胶卷滚进可见区 */
+function afterLoadForm(){
+  updatePP();
+  const box = $("#filmchips");
+  const on  = document.querySelector("#filmchips .chip.on");
+  if (!box || !on) return;
+  const l = on.offsetLeft, r = l + on.offsetWidth;
+  if (l < box.scrollLeft || r > box.scrollLeft + box.clientWidth){
+    box.scrollLeft = Math.max(0, l - 30);
+  }
+}
+
+function saveLoad(id, isEdit){
+  const db = load();
+  if (!db.cameras[id]) { toast("机身不存在"); return; }
+  const c = db.cameras[id];
+
+  const stock = $("#f-stock").value.trim();
+  if (!stock){ toast("至少要填胶卷型号"); return; }
+
+  const roll = {
+    stock,
+    iso:  Number($("#f-iso").value)  || null,
+    ei:   Number($("#f-ei").value)   || null,
+    loadedAt: $("#f-date").value || todayLocal(),
+    shots: Number($("#f-shots").value) || 0,
+    total: Number($("#f-total").value) || DEFAULT_FRAMES[c.format] || 0,
+    note: $("#f-note").value.trim(),
+    filmId: filmId(stock)
+  };
+
+  if (roll.total && roll.shots > roll.total){
+    toast("已拍张数不能超过总张数");
+    return;
+  }
+
+  if (!isEdit && c.loaded){
+    c.history = c.history || [];
+    c.history.push(Object.assign({}, c.loaded, { unloadedAt: todayLocal() }));
+  }
+  c.loaded = roll;
+  save(db);
+  toast(isEdit ? "已保存" : "装卷完成");
+  go("#/c/" + encodeURIComponent(id));
+}
+
+function clearFilm(id){
+  const db = load();
+  const c = db.cameras[id];
+  if (!c) return;
+  if (c.loaded){
+    c.history = c.history || [];
+    c.history.push(Object.assign({}, c.loaded, { unloadedAt: todayLocal() }));
+  }
+  c.loaded = null;
+  save(db);
+  toast("已标记为空机");
+  go("#/c/" + encodeURIComponent(id));
+}
+
+/* 过片 ＋1 —— 最高频的动作，所以不跳页也不回滚到顶部，点一下原地更新 */
+function advanceShot(id){
+  const db = load();
+  const c = db.cameras[id];
+  if (!c || !c.loaded) return;
+  const r = c.loaded;
+  if (r.total && r.shots >= r.total){ toast("这卷已经拍满了，先回卷"); return; }
+
+  r.shots = (Number(r.shots) || 0) + 1;
+  save(db);
+
+  if (!r.total)                       toast("第 " + r.shots + " 张");
+  else if (r.shots >= r.total)        toast("第 " + r.shots + " 张 —— 拍满了，记得回卷");
+  else                                toast("第 " + r.shots + " / " + r.total + " 张");
+
+  render(true);
+}
+
+function copySlip(id){
+  const db = load();
+  const c = db.cameras[id];
+  if (!c || !c.loaded) return;
+  const r = c.loaded;
+  const pp = pushPull(r.iso, r.ei);
+  const lines = [
+    "机身：" + (c.name || "—"),
+    "胶卷：" + (r.stock || "—"),
+    r.iso ? "标称 ISO：" + r.iso : "",
+    r.ei  ? "实拍 EI：" + r.ei + (pp ? "（" + pp.text + "）" : "") : "",
+    r.loadedAt ? "装卷：" + r.loadedAt : "",
+    r.note ? "备注：" + r.note : ""
+  ].filter(Boolean);
+  const txt = lines.join("\n");
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(()=>toast("已复制，可直接发给冲扫店"), ()=>fallbackCopy(txt));
+  } else fallbackCopy(txt);
+}
+function fallbackCopy(txt){
+  const ta = document.createElement("textarea");
+  ta.value = txt; document.body.appendChild(ta); ta.select();
+  try{ document.execCommand("copy"); toast("已复制"); }catch(e){ toast("复制失败，请长按选择"); }
+  document.body.removeChild(ta);
+}
+
+/* ══════════════ NAS 同步（WebDAV）══════════════
+   地址和账号由用户自己在设置里填，只存本机 localStorage。
+   代码里永远不出现凭据 —— 这个项目是要发布出去的，硬编码等于公开泄密。 */
+
+const DAV_KEY = "filmnfc.webdav";
+const DAV_FILE = "filmnfc-backup.json";
+
+function getDav(){
+  try{
+    const c = JSON.parse(localStorage.getItem(DAV_KEY));
+    if (c && typeof c.url === "string" && c.url.trim()) return c;
+  }catch(e){}
+  return null;
+}
+function saveDav(c){ try{ localStorage.setItem(DAV_KEY, JSON.stringify(c)); }catch(e){ toast("存储写入失败，可能是隐私模式"); } }
+function clearDav(){ localStorage.removeItem(DAV_KEY); }
+
+function davHeaders(c){
+  const h = {};
+  if (c.user || c.pass) h["Authorization"] = "Basic " + btoa(c.user + ":" + c.pass);
+  return h;
+}
+function davFile(c, name){ return c.url.replace(/\/+$/, "") + "/" + name; }
+
+function saveDavFromForm(){
+  const url = $("#dav-url").value.trim();
+  if (!url){ clearDav(); toast("已清除同步设置"); render(true); return; }
+  if (!/^https?:\/\//i.test(url)){ toast("地址要以 http:// 或 https:// 开头"); return; }
+
+  const typed = $("#dav-pass").value;   // 留空表示沿用已保存的密码
+  const old = getDav();
+  saveDav({
+    url,
+    user: $("#dav-user").value,
+    pass: typed || ((old && old.pass) || "")
+  });
+  toast(/^http:\/\//i.test(url) ? "已保存 —— 注意这是明文 http" : "已保存");
+  render(true);
+}
+
+function clearDavSettings(){
+  if (!confirm("清除本机保存的 NAS 地址和账号密码？")) return;
+  clearDav();
+  toast("已清除");
+  render(true);
+}
+
+async function syncToNas(){
+  const c = getDav();
+  if (!c){ toast("先填 WebDAV 地址"); return; }
+
+  const db = load();
+  db.savedAt = new Date().toISOString();
+  save(db);
+  toast("同步中…");
+
+  try{
+    const res = await fetch(davFile(c, DAV_FILE), {
+      method: "PUT",
+      headers: Object.assign({ "Content-Type": "application/json" }, davHeaders(c)),
+      body: JSON.stringify(db, null, 2)
+    });
+    if (res.ok || res.status === 201 || res.status === 204)  toast("已同步到 NAS");
+    else if (res.status === 401 || res.status === 403)       toast("认证失败，检查账号密码");
+    else                                                     toast("同步失败：" + res.status);
+  }catch(e){
+    toast("连不上 NAS，检查地址和网络");
+  }
+}
+
+/* 恢复只能由用户主动点。绝不在打开页面时自动跑，
+   也绝不用 NAS 覆盖本机 —— 否则会出现「本地刚记的机身被悄悄抹掉」。 */
+async function restoreFromNas(){
+  const c = getDav();
+  if (!c){ toast("先填 WebDAV 地址"); return; }
+
+  toast("读取中…");
+  try{
+    const res = await fetch(davFile(c, DAV_FILE), { headers: davHeaders(c) });
+    if (res.status === 401 || res.status === 403){ toast("认证失败，检查账号密码"); return; }
+    if (!res.ok){ toast("NAS 上没有找到备份（" + res.status + "）"); return; }
+
+    const remote = await res.json();
+    if (!remote || !remote.cameras){ toast("备份格式不对，已取消"); return; }
+
+    const localN  = Object.keys(load().cameras).length;
+    const remoteN = Object.keys(remote.cameras).length;
+    if (localN > 0 && !confirm("本机已有 " + localN + " 台机身，NAS 上有 " + remoteN + " 台。\n\n"
+        + "继续会用 NAS 的备份覆盖本机数据，确定吗？")) return;
+
+    save(normalize(remote));
+    toast("已从 NAS 恢复 " + remoteN + " 台机身");
+    go("#/");
+  }catch(e){
+    toast("连不上 NAS，检查地址和网络");
+  }
+}
+
+function exportJSON(){
+  const db = load();
+  const blob = new Blob([JSON.stringify(db, null, 2)], { type:"application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "胶片簿备份-" + todayLocal() + ".json";
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  toast("已导出");
+}
+
+function importJSON(){
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = ".json,application/json";
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      try{
+        const d = JSON.parse(fr.result);
+        if (!d || !d.cameras) throw new Error("格式不对");
+        if (!confirm("导入会覆盖当前全部数据，继续？")) return;
+        save(normalize(d));
+        toast("导入成功");
+        go("#/");
+      }catch(e){ toast("这个文件读不出来"); }
+    };
+    fr.readAsText(f);
+  };
+  inp.click();
+}
+
+function wipe(){
+  if (!confirm("会删掉所有机身和记录，且无法恢复。确定？")) return;
+  if (!confirm("真的确定？建议先导出备份。")) return;
+  localStorage.removeItem(KEY);
+  toast("已清空");
+  go("#/");
+}
+
+/* ══════════════ 挂载 ══════════════ */
+
+function render(keepScroll){
+  const y = keepScroll ? window.scrollY : 0;
+  const r = parseRoute();
+  const db = load();
+  const app = $("#app");
+  if (r.view === "home")     app.innerHTML = renderHome(db);
+  else if (r.view === "cam") app.innerHTML = renderCam(db, r.id);
+  else if (r.view === "setup") app.innerHTML = renderSetup(db, r.id, true);
+  else if (r.view === "load")  app.innerHTML = renderLoad(db, r.id, false);
+  else if (r.view === "edit")  app.innerHTML = renderLoad(db, r.id, true);
+  else if (r.view === "history") app.innerHTML = renderHistory(db, r.id);
+  else if (r.view === "stats")    app.innerHTML = renderStats(db);
+  else if (r.view === "settings") app.innerHTML = renderSettings(db);
+  if (r.view === "load" || r.view === "edit") afterLoadForm();
+  window.scrollTo(0, y);
+}
+
+window.addEventListener("hashchange", render);
+
+// 方便测试：打开 ?demo=1 会自动灌一份示例数据
+(function bootDemo(){
+  const q = new URLSearchParams(location.search);
+  if (q.get("demo") !== "1") return;
+  if (!Object.keys(load().cameras).length) save(demoData());
+  if (q.get("c")) return;                 // 有 c 参数就交给 parseRoute
+  history.replaceState(null, "", location.pathname + "#/");
+})();
+
+render();
+
+if ("serviceWorker" in navigator && location.protocol === "https:"){
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(()=>{}));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "胶片簿 · 机身登记",
+  "short_name": "胶片簿",
+  "description": "碰一下 NFC 挂件，就知道这台相机里装的什么胶卷、装了多久。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#17140f",
+  "theme_color": "#17140f",
+  "lang": "zh-CN"
+}
