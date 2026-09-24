@@ -6,11 +6,31 @@ const path = require("path");
 const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 
 /* 凭据回归护栏：这个项目是要发布出去的，源码里绝不允许出现任何凭据或内网地址。
-   （上一个项目就是因为把 NAS 账号密码硬编码进 app.js 并推上公开仓库才泄露的。） */
-const CRED = /REDACTED-BY-HISTORY-REWRITE|192\.168\.\d+\.\d+|WEBDAV_AUTH\s*=\s*['"][^'"]+['"]/;
-if (CRED.test(html)) {
-  console.error("❌ index.html 里出现了凭据或内网地址，拒绝通过：", html.match(CRED)[0]);
-  process.exit(1);
+   （上一个项目就是因为把 NAS 账号密码硬编码进 app.js 并推上公开仓库才泄露的。）
+
+   ⚠️ 护栏自己也只能写「泛化的形状」，绝不能把真实密码 / 内网 IP 写成字面量 ——
+   否则护栏本身就是新的泄露点。这个坑真踩过：把密码原样写进 mustNot 数组里，
+   文件一提交，等于换个地方继续公开它（而且是在一个专门用来防泄露的文件里）。
+   所以下面这些规则描述的只有「长什么样」，不包含任何真实值。 */
+const CRED_RULES = [
+  [/\b192\.168\.\d{1,3}\.\d{1,3}\b/,                       "私有网段 192.168.x.x"],
+  [/\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,                    "私有网段 10.x.x.x"],
+  [/\b172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}\b/,     "私有网段 172.16–31.x.x"],
+  [/WEBDAV_AUTH\s*=\s*['"][^'"]+['"]/,                     "硬编码的 WebDAV 凭据"],
+  [/Authorization['"]?\s*[:=]\s*['"]Basic\s+[A-Za-z0-9+/=]{8,}/, "硬编码的 Basic 认证头"]
+];
+
+/* 护栏要覆盖所有会发出去的文本文件，不能只看 index.html */
+const SHIPPED = ["index.html", "sw.js", "manifest.webmanifest"];
+for (const f of SHIPPED) {
+  const text = f === "index.html" ? html : fs.readFileSync(path.join(__dirname, f), "utf8");
+  for (const [re, why] of CRED_RULES) {
+    const hit = text.match(re);
+    if (hit) {
+      console.error("❌ " + f + " 里出现了「" + why + "」，拒绝通过：", hit[0]);
+      process.exit(1);
+    }
+  }
 }
 
 const m = html.match(/<script>([\s\S]*?)<\/script>/);
@@ -96,7 +116,7 @@ const CASES = [
   { name:"设置与备份",  search:"",       hash:"#/settings",
     must:["导出备份","已登记的机身 ID","?c=","清空全部数据",
           "同步到自己的 NAS","WebDAV 目录地址","保存同步设置"],
-    mustNot:["REDACTED-BY-HISTORY-REWRITE","REDACTED-BY-HISTORY-REWRITE"] }
+    mustNot:["192.168.","WEBDAV_AUTH","Authorization: Basic"] }
 ];
 
 const REPORT = [];
@@ -264,6 +284,24 @@ try {
 
   check("改名迁移（NAS 设置）", ok1 && ok2, "读老键=" + ok1 + " 落新键=" + ok2);
 } catch (e) { check("改名迁移（NAS 设置）", false, "抛异常 " + e.message); }
+
+/* ── 护栏自测：护栏必须真的会响，否则等于没有 ──
+   样本全是编造的（10.11.12.13 / user:secret），不含任何真实凭据。 */
+try {
+  const BAD_SAMPLES = [
+    'var u = "http://10.11.12.13:5005/dav"',
+    "WEBDAV_AUTH = 'user:secret'",
+    'headers:{Authorization:"Basic dXNlcjpwYXNz"}'
+  ];
+  const GOOD_SAMPLES = [
+    "https://nas.example.com/dav/film/",
+    "film-tap",
+    "还剩 12 张"
+  ];
+  const caught = BAD_SAMPLES.every(s => CRED_RULES.some(([re]) => re.test(s)));
+  const quiet  = GOOD_SAMPLES.every(s => !CRED_RULES.some(([re]) => re.test(s)));
+  check("凭据护栏有效", caught && quiet, "能拦截=" + caught + " 不误报=" + quiet);
+} catch (e) { check("凭据护栏有效", false, "抛异常 " + e.message); }
 
 __report(REPORT, pass, fail);
 `;
