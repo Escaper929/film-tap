@@ -17,13 +17,29 @@ const CRED_RULES = [
   [/\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,                    "私有网段 10.x.x.x"],
   [/\b172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}\b/,     "私有网段 172.16–31.x.x"],
   [/WEBDAV_AUTH\s*=\s*['"][^'"]+['"]/,                     "硬编码的 WebDAV 凭据"],
-  [/Authorization['"]?\s*[:=]\s*['"]Basic\s+[A-Za-z0-9+/=]{8,}/, "硬编码的 Basic 认证头"]
+  [/Authorization['"]?\s*[:=]\s*['"]Basic\s+[A-Za-z0-9+/=]{8,}/, "硬编码的 Basic 认证头"],
+  /* GitHub 令牌的形状。项目现在会把数据写进一个私有仓库，所以「令牌被写进源码」
+     成了新的头号风险：ghp_ = classic PAT，gho_ = OAuth，ghs_ = 服务令牌，
+     github_pat_ = fine-grained。只描述形状，不含任何真实值。 */
+  [/\bghp_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub classic 令牌"],
+  [/\bgho_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub OAuth 令牌"],
+  [/\bghs_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub 服务令牌"],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/,                       "硬编码的 GitHub 细粒度令牌"]
 ];
 
-/* 护栏要覆盖所有会发出去的文本文件，不能只看 index.html */
-const SHIPPED = ["index.html", "sw.js", "manifest.webmanifest"];
+/* 护栏要覆盖仓库里所有发得出去的文本文件。
+   关键：**不能只看站点上打得开的文件**。上次的泄露就发生在 _selftest.js 里 ——
+   GitHub Pages 会跳过下划线开头的文件（站点上 404），但它在公开仓库里照样能拿到。
+   也就是说，真正的暴露面是「仓库可见范围」，不是「站点可访问范围」。 */
+const SHIPPED = [
+  "index.html", "sw.js", "manifest.webmanifest",
+  "README.md", "_selftest.js", "_shots.py",
+  "model/build_fob.py", "model/fob.scad", "model/preview.py", "model/render.py"
+];
 for (const f of SHIPPED) {
-  const text = f === "index.html" ? html : fs.readFileSync(path.join(__dirname, f), "utf8");
+  const p = path.join(__dirname, f);
+  if (!fs.existsSync(p)) continue;
+  const text = f === "index.html" ? html : fs.readFileSync(p, "utf8");
   for (const [re, why] of CRED_RULES) {
     const hit = text.match(re);
     if (hit) {
@@ -76,6 +92,10 @@ global.confirm = () => true;
 global.clearTimeout = () => {};
 global.setTimeout = () => 0;
 
+/* fetch 默认不打桩：万一有代码在启动路径上真的想发请求，会立刻炸出来，
+   而不是被静默吞掉。需要网络的用例自己在驱动里设 global.fetch。 */
+global.fetch = () => Promise.reject(new Error("测试里没有打桩 fetch"));
+
 /* ── 注入测试驱动 ── */
 const driver = `
 save(demoData());
@@ -115,8 +135,10 @@ const CASES = [
     mustNot:[] },
   { name:"设置与备份",  search:"",       hash:"#/settings",
     must:["导出备份","已登记的机身 ID","?c=","清空全部数据",
-          "同步到自己的 NAS","WebDAV 目录地址","保存同步设置"],
-    mustNot:["192.168.","WEBDAV_AUTH","Authorization: Basic"] }
+          "同步到自己的 NAS","WebDAV 目录地址","保存同步设置",
+          "同步到私有仓库","访问令牌","保存仓库设置"],
+    mustNot:["192.168.","WEBDAV_AUTH","Authorization: Basic","Bearer ",
+             "ghp_","gho_","github_pat_"] }
 ];
 
 const REPORT = [];
@@ -286,24 +308,163 @@ try {
 } catch (e) { check("改名迁移（NAS 设置）", false, "抛异常 " + e.message); }
 
 /* ── 护栏自测：护栏必须真的会响，否则等于没有 ──
-   样本全是编造的（10.11.12.13 / user:secret），不含任何真实凭据。 */
+   ⚠️ 样本必须**在运行时拼出来**，不能在源码里写成字面量。
+   因为 _selftest.js 本身也在被扫描的文件列表里（上次泄露就在这个文件）。
+   写成字面量会两头不讨好：要么护栏把自己拦下来，要么为了让它通过而
+   把这个文件从扫描列表里去掉 —— 那样真令牌就能藏在最该被检查的地方。
+   拼出来之后，文件里出现的是 "10" + "." + ... 这样的碎片，任何规则都不命中。 */
 try {
+  const oct = ["10", "11", "12", "13"].join(".");            // 编造的私网地址碎片
   const BAD_SAMPLES = [
-    'var u = "http://10.11.12.13:5005/dav"',
-    "WEBDAV_AUTH = 'user:secret'",
-    'headers:{Authorization:"Basic dXNlcjpwYXNz"}'
+    'var u = "http://' + oct + ':5005/dav"',
+    "WEBDAV" + "_AUTH = 'user:secret'",
+    'headers:{Authorization:"Ba' + 'sic dXNlcjpwYXNz"}',
+    "token = " + "ghp_" + "A1b2C3d4E5f6G7h8I9j0".repeat(2),
+    "token = " + "gho_" + "Z9y8X7w6V5u4T3s2R1q0".repeat(2),
+    "token = " + "github_" + "pat_" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8".repeat(2)
   ];
   const GOOD_SAMPLES = [
     "https://nas.example.com/dav/film/",
+    'headers.Authorization = "Bearer " + token',            // 正确写法：令牌走变量，不进源码
+    "https://api.github.com/repos/Escaper929/film-tap-data/contents/data.json",
     "film-tap",
     "还剩 12 张"
   ];
   const caught = BAD_SAMPLES.every(s => CRED_RULES.some(([re]) => re.test(s)));
   const quiet  = GOOD_SAMPLES.every(s => !CRED_RULES.some(([re]) => re.test(s)));
-  check("凭据护栏有效", caught && quiet, "能拦截=" + caught + " 不误报=" + quiet);
+  check("凭据护栏有效", caught && quiet,
+        "能拦截 " + BAD_SAMPLES.filter(s => CRED_RULES.some(([re]) => re.test(s))).length +
+        "/" + BAD_SAMPLES.length + " 不误报=" + quiet);
 } catch (e) { check("凭据护栏有效", false, "抛异常 " + e.message); }
 
-__report(REPORT, pass, fail);
+/* ══════════════════════════════════════════════════════════
+   私有仓库同步（GitHub Contents API）—— 需要网络，所以放在异步段里，
+   用打桩的 fetch 跑。验证四件事：中文能完整往返、只有空库才回灌、
+   有数据时一个请求都不发、以及令牌只出现在请求头里绝不进请求体。
+   ══════════════════════════════════════════════════════════ */
+(async () => {
+  let PUTS = [], GETS = 0;
+  const REMOTE = { version: 2, cameras: {
+    r1: { id:"r1", name:"仓库里的机身 禄来 3.5F", format:"120", loaded:null, history:[] }
+  } };
+
+  function stubFetch(remote){
+    PUTS = []; GETS = 0;
+    global.fetch = async (url, opt) => {
+      const method = (opt && opt.method) || "GET";
+      if (method === "PUT"){
+        PUTS.push({ url:String(url), body:JSON.parse(opt.body),
+                    auth:(opt.headers || {}).Authorization });
+        return { ok:true, status:200, json: async () => ({ content:{ sha:"s2" } }) };
+      }
+      GETS++;
+      if (!remote) return { ok:false, status:404, json: async () => ({}) };
+      return { ok:true, status:200,
+               json: async () => ({ content:b64encode(JSON.stringify(remote)), sha:"s1" }) };
+    };
+  }
+
+  /* load() 在新键缺失时会回头读改名前的旧键（filmnfc.v1），
+     而上面的迁移用例往旧键里塞过数据 —— 所以「清空本机」必须两个键一起清，
+     否则本机看着是空的、实际不空，回灌就被正确地拒绝了，测出来像是功能坏了。 */
+  const clearLocal = () => {
+    localStorage.removeItem("filmtap.v1");
+    localStorage.removeItem("filmnfc.v1");
+  };
+
+  try {
+    /* ── base64 必须能带中文往返（机身名和备注都是中文）── */
+    const zh = "禄来 3.5F · 富士 C200 · 「推到 1600 拍夜景」";
+    const okB64 = b64decode(b64encode(zh)) === zh;
+    check("base64 中文往返", okB64, okB64 ? zh.length + " 字符原样返回" : "往返不一致");
+
+    /* ── 设置只落本机、令牌留空保留、默认值补齐 ── */
+    __setLoc("", "#/settings"); render();
+    __setValue("#gh-owner", "Escaper929");
+    __setValue("#gh-repo",  "film-tap-data");
+    __setValue("#gh-path",  "");
+    __setValue("#gh-branch","");
+    __setValue("#gh-token", "fine-" + "grained-sample");
+    saveGhFromForm();
+    const g1 = getGh();
+    const okG1 = !!g1 && g1.owner === "Escaper929" && g1.repo === "film-tap-data" &&
+                 g1.path === "data.json" && g1.branch === "main";
+    __setValue("#gh-token", "");
+    saveGhFromForm();
+    const okG2 = getGh().token === "fine-" + "grained-sample";
+    const ui   = __app();
+    const okG3 = ui.indexOf("保存仓库设置") >= 0 && ui.indexOf("立即上传") >= 0 &&
+                 ui.indexOf("从仓库拉取") >= 0 && ui.indexOf("自动同步") >= 0;
+    check("仓库设置本机存储", okG1 && okG2 && okG3,
+          "默认值=" + okG1 + " 留空保留=" + okG2 + " 按钮齐=" + okG3);
+
+    /* ── 本机为空 → 自动回灌；本机有数据 → 一个请求都不发、绝不覆盖 ── */
+    clearLocal();
+    stubFetch(REMOTE);
+    await ghRehydrate();
+    const d1 = load();
+    const okR1 = !!d1.cameras.r1 && d1.cameras.r1.name === "仓库里的机身 禄来 3.5F";
+    const okR2 = d1.cameras.r1.format === "120";
+
+    stubFetch(REMOTE);
+    save({ version:2, cameras:{ mine:{ id:"mine", name:"本机自己的机身",
+                                      format:"135", loaded:null, history:[] } } });
+    await ghRehydrate();
+    const okR3 = GETS === 0;
+    const d2 = load();
+    const okR4 = !!d2.cameras.mine && !d2.cameras.r1;
+    check("回灌只在空库发生", okR1 && okR2 && okR3 && okR4,
+          "拉回=" + okR1 + " 字段完整=" + okR2 + " 有数据时不请求=" + okR3 + " 未覆盖=" + okR4);
+
+    /* ── 上传：内容对、带 sha、令牌只在请求头 ── */
+    stubFetch(REMOTE);
+    const okP1 = await ghPush(true);
+    const put  = PUTS[PUTS.length - 1];
+    const sent = JSON.parse(b64decode(put.body.content));
+    const okP2 = !!sent.cameras.mine && !sent.cameras.r1;
+    const okP3 = put.body.sha === "s1" && put.body.branch === "main";
+    const okP4 = put.auth === "Bearer " + getGh().token;
+    const okP5 = put.body.content.indexOf("fine-") < 0;      // 令牌绝不能混进请求体
+    check("上传内容与令牌不外泄", okP1 && okP2 && okP3 && okP4 && okP5,
+          "成功=" + okP1 + " 内容对=" + okP2 + " 带sha=" + okP3 +
+          " 只在头=" + okP4 + " 不进body=" + okP5);
+
+    /* ── 自动同步开关的语义 ── */
+    let g = getGh(); g.auto = false; saveGh(g);
+
+    clearLocal();
+    stubFetch(REMOTE);
+    await ghRehydrate();
+    const okA1 = !!load().cameras.r1;                        // 关着也回灌：防丢数据的底线
+
+    let queued = null;
+    const realSetTimeout = global.setTimeout;
+    global.setTimeout = (fn) => { queued = fn; return 1; };
+    const putCount = PUTS.length;
+    save(load());
+    const okA2 = queued === null;                            // 关着不排队
+    const okA3 = PUTS.length === putCount;                   // 关着不上传
+
+    g = getGh(); g.auto = true; saveGh(g);
+    queued = null;
+    save(load());
+    global.setTimeout = realSetTimeout;
+    const okA4 = typeof queued === "function";               // 开着会排队
+    if (okA4) await queued();
+    const okA5 = PUTS.length === putCount + 1;               // 排队的那次真的发出去了
+    check("自动同步开关语义", okA1 && okA2 && okA3 && okA4 && okA5,
+          "关着也回灌=" + okA1 + " 关着不排队=" + okA2 + " 关着不上传=" + okA3 +
+          " 开着排队=" + okA4 + " 开着上传=" + okA5);
+
+    clearGh();
+    const okC = getGh() === null;
+    check("仓库设置可清除", okC, "清掉=" + okC);
+  } catch (e) {
+    check("私有仓库同步", false, "抛异常 " + e.message);
+  }
+
+  __report(REPORT, pass, fail);
+})();
 `;
 
 global.__setLoc = (search, hash) => { loc.search = search; loc.hash = hash; };

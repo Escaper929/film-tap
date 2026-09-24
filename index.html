@@ -228,9 +228,14 @@ function load(){
     return normalize(d);
   }catch(e){ return blank(); }
 }
+/* 启动过程中也会调 save()（灌示例数据），那不是用户改的数据，不该触发上传。
+   所以用一个开关隔开：脚本跑完、初次 render 之后才允许自动同步。 */
+let syncArmed = false;
+
 function save(d){
   try{ localStorage.setItem(KEY, JSON.stringify(d)); }
   catch(e){ toast("存储写入失败，可能是隐私模式"); }
+  if (syncArmed) scheduleGhPush();
 }
 
 /* ══════════════ 小工具 ══════════════ */
@@ -775,7 +780,8 @@ function renderSettings(db){
   h += '<h2>备份</h2>'
      + '<button class="btn" onclick="exportJSON()">导出备份（JSON）</button>'
      + '<button class="btn" onclick="importJSON()">导入备份</button>'
-     + '<div class="hint">数据默认只存在这台设备的浏览器里。换手机、清缓存之前先导一份出来。</div>';
+     + '<div class="hint">数据默认只存在这台设备的浏览器里。换手机、清缓存之前先导一份出来。'
+     + '下面配了 NAS 或私有仓库的话，那两处也会各兜住一份。</div>';
 
   const dav = getDav();
   h += '<h2>同步到自己的 NAS（可选）</h2>';
@@ -799,6 +805,42 @@ function renderSettings(db){
        +   '<button class="btn" onclick="restoreFromNas()">从 NAS 恢复</button>'
        + '</div>';
     h += '<button class="btn ghost" onclick="clearDavSettings()">清除同步凭据</button>';
+  }
+
+  const gh = getGh();
+  h += '<h2>同步到私有仓库（可选）</h2>';
+  h += '<div class="card" style="padding:16px 18px">';
+  h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
+     + '把数据存进一个<b>私有</b> GitHub 仓库。代码仓库是公开的，数据得单独放一处 —— '
+     + '提交进公开仓库的数据会永久留在 Git 历史里。放这儿的好处是数据不公开、自带版本历史，'
+     + '而且本机被系统清理或换了手机之后，一打开就自动拉回来。</div>';
+  h += '<label>仓库所有者</label>'
+     + '<input id="gh-owner" placeholder="例如 Escaper929" autocomplete="off" spellcheck="false" value="' + esc(gh ? gh.owner : "") + '">';
+  h += '<label>仓库名</label>'
+     + '<input id="gh-repo" placeholder="例如 film-tap-data" autocomplete="off" spellcheck="false" value="' + esc(gh ? gh.repo : "") + '">';
+  h += '<label>文件路径</label>'
+     + '<input id="gh-path" autocomplete="off" spellcheck="false" placeholder="' + GH_DEFAULT_PATH + '" value="' + esc(gh ? gh.path : "") + '">';
+  h += '<label>分支</label>'
+     + '<input id="gh-branch" placeholder="main" autocomplete="off" spellcheck="false" value="' + esc(gh ? gh.branch : "") + '">';
+  h += '<label>访问令牌</label>'
+     + '<input id="gh-token" type="password" autocomplete="new-password" placeholder="'
+     +   (gh ? "已保存，留空就不改" : "粘贴 fine-grained token") + '">';
+  h += '<div class="hint">令牌只保存在这台设备上，<b>不会写进代码、也不会随网页发布出去</b>。'
+     + '去 GitHub 建一枚 <b>Fine-grained token</b>：只勾选这一个私有仓库，'
+     + '权限只给 <b>Contents: Read and write</b>，并设一个过期日期。'
+     + '手机丢了就回 GitHub 把那枚令牌撤销掉。</div>';
+  h += '</div>';
+  h += '<button class="btn' + (gh ? "" : " primary") + '" onclick="saveGhFromForm()">保存仓库设置</button>';
+  if (gh){
+    h += '<div class="row">'
+       +   '<button class="btn" onclick="ghPush(false)">立即上传</button>'
+       +   '<button class="btn" onclick="ghPull()">从仓库拉取</button>'
+       + '</div>';
+    h += '<button class="btn' + (gh.auto ? " primary" : "") + '" onclick="toggleGhAuto()">自动同步：'
+       +   (gh.auto ? "已开启" : "已关闭") + '</button>';
+    h += '<div class="hint">关掉之后只有点「立即上传」才会写仓库。'
+       + '「本机为空时自动拉回」不受这个开关影响 —— 那是防数据丢失的底线。</div>';
+    h += '<button class="btn ghost" onclick="clearGhSettings()">清除仓库设置</button>';
   }
 
   h += '<h2>给 NFC 标签写什么</h2>';
@@ -1111,6 +1153,221 @@ async function restoreFromNas(){
   }
 }
 
+/* ══════════════ 私有仓库同步（GitHub Contents API）══════════════
+   为什么是「另开一个私有仓库」而不是直接写进本仓库：
+   代码仓库必须公开才能用免费的 GitHub Pages，而数据不该公开 ——
+   而且提交进 Git 的数据会永久留在历史里，删都删不掉。所以拆成两处。
+
+   代价是需要一枚令牌，因此有三条铁律：
+     1. 令牌只存本机 localStorage，**永远不进源码、不进仓库**。
+     2. 令牌只放 Authorization 请求头，绝不写进请求体、日志或界面。
+     3. 令牌必须是 fine-grained：只授权这一个数据仓库，只给 Contents 读写，并设过期时间。 */
+
+const GH_KEY          = "filmtap.github";
+const GH_DEFAULT_PATH = "data.json";
+
+function getGh(){
+  try{
+    const c = JSON.parse(localStorage.getItem(GH_KEY));
+    if (c && c.owner && c.repo && c.token) return c;
+  }catch(e){}
+  return null;
+}
+function saveGh(c){ try{ localStorage.setItem(GH_KEY, JSON.stringify(c)); }catch(e){ toast("存储写入失败，可能是隐私模式"); } }
+function clearGh(){ localStorage.removeItem(GH_KEY); }
+
+/* GitHub 的 contents 走 base64。机身名和备注会写中文，所以不能直接 btoa(字符串) ——
+   那在非 Latin1 字符上直接抛错。必须先编码成 UTF-8 字节再转。 */
+function b64encode(str){
+  const bytes = new TextEncoder().encode(str);
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+function b64decode(b64){
+  const s = atob(String(b64 == null ? "" : b64).replace(/\s+/g, ""));
+  const bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+function ghApi(c){
+  return "https://api.github.com/repos/" + encodeURIComponent(c.owner) + "/"
+       + encodeURIComponent(c.repo) + "/contents/"
+       + String(c.path).split("/").map(encodeURIComponent).join("/");
+}
+function ghHeaders(c){
+  return {
+    "Authorization": "Bearer " + c.token,          // 只走请求头
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+}
+
+/* 读远端 → { db, sha }，失败 → { error } */
+async function ghFetch(c){
+  let res;
+  try{
+    res = await fetch(ghApi(c) + "?ref=" + encodeURIComponent(c.branch || "main"),
+                      { headers: ghHeaders(c) });
+  }catch(e){ return { error:"连不上 GitHub，检查网络" }; }
+
+  if (res.status === 401) return { error:"令牌无效或已过期（去 GitHub 重新生成一枚）" };
+  if (res.status === 403) return { error:"令牌权限不够，需要 Contents 读写" };
+  if (res.status === 404) return { error:"找不到 " + c.owner + "/" + c.repo + " 里的 " + c.path };
+  if (!res.ok)            return { error:"读取失败：" + res.status };
+
+  try{
+    const j  = await res.json();
+    const db = JSON.parse(b64decode(j.content));
+    if (!db || !db.cameras) return { error:"仓库里的数据格式不对" };
+    return { db, sha: j.sha };
+  }catch(e){ return { error:"仓库里的数据读不出来" }; }
+}
+
+/* 写远端。先读一次拿 sha 再写，避免在远端堆出一串无意义的版本。 */
+async function ghPush(quiet){
+  const c = getGh();
+  if (!c) return false;
+
+  const cur = await ghFetch(c);
+  if (cur.error && cur.error.indexOf("找不到") < 0){      // 404 是首次创建，允许继续
+    if (!quiet) toast(cur.error);
+    return false;
+  }
+
+  /* savedAt 只加在要发出去的这一份里，不回写本机 ——
+     否则 save() → 自动推送 → save() 会绕成死循环。 */
+  const payload = Object.assign({}, load(), { savedAt: new Date().toISOString() });
+  const body = {
+    message: "更新胶片数据 " + todayLocal(),
+    content: b64encode(JSON.stringify(payload, null, 2)),
+    branch:  c.branch || "main"
+  };
+  if (cur.sha) body.sha = cur.sha;
+
+  const put = () => fetch(ghApi(c), {
+    method: "PUT",
+    headers: Object.assign({ "Content-Type": "application/json" }, ghHeaders(c)),
+    body: JSON.stringify(body)
+  });
+
+  let res;
+  try{ res = await put(); }
+  catch(e){ if (!quiet) toast("连不上 GitHub，检查网络"); return false; }
+
+  if (res.ok || res.status === 201){
+    if (!quiet) toast("已上传到私有仓库");
+    return true;
+  }
+
+  if (res.status === 409){          // 我们读完之后远端又变了：重读 sha 再写一次
+    const again = await ghFetch(c);
+    if (!again.error){
+      body.sha = again.sha;
+      try{
+        const retry = await put();
+        if (retry.ok || retry.status === 201){
+          if (!quiet) toast("已上传到私有仓库");
+          return true;
+        }
+      }catch(e){}
+    }
+  }
+
+  if (!quiet) toast(res.status === 403 ? "令牌权限不够，需要 Contents 读写" : "上传失败：" + res.status);
+  return false;
+}
+
+/* 变更后的自动上传。防抖 2 秒：连着点过片不会打成一串提交。 */
+let ghTimer = null;
+function scheduleGhPush(){
+  const c = getGh();
+  if (!c || !c.auto) return;
+  clearTimeout(ghTimer);
+  /* 把 promise return 出去只是为了可测：自检里要能 await 这次被安排的上传。
+     浏览器里 setTimeout 的回调返回值没人看，无副作用。 */
+  ghTimer = setTimeout(()=>{ ghTimer = null; return ghPush(true).catch(()=>{}); }, 2000);
+}
+function flushGhPush(){
+  if (ghTimer){
+    clearTimeout(ghTimer); ghTimer = null;
+    return ghPush(true).catch(()=>{});
+  }
+}
+
+/* 打开时回灌 —— 这是对付 iOS「Safari 闲置 7 天清空 localStorage」的唯一可靠手段。
+   ⚠️ 只在本地一台机身都没有时才动手。本机有数据时**绝不覆盖**，
+      否则会出现「刚记的机身被悄悄抹掉」。NAS 那边踩过同样的坑，这条是硬规矩。 */
+async function ghRehydrate(){
+  const c = getGh();
+  if (!c) return;
+  if (Object.keys(load().cameras).length) return;      // 本机有数据 → 什么都不做
+
+  const r = await ghFetch(c);
+  if (r.error || !r.db) return;
+  if (!Object.keys(r.db.cameras).length) return;       // 远端也是空的，没什么可拉
+
+  save(normalize(r.db));
+  render(true);
+  toast("已从私有仓库恢复 " + Object.keys(r.db.cameras).length + " 台机身");
+}
+
+/* 手动拉取。这条会覆盖本机，所以只要有数据就必须先确认。 */
+async function ghPull(){
+  const c = getGh();
+  if (!c){ toast("先填仓库设置"); return; }
+
+  toast("读取中…");
+  const r = await ghFetch(c);
+  if (r.error){ toast(r.error); return; }
+
+  const localN  = Object.keys(load().cameras).length;
+  const remoteN = Object.keys(r.db.cameras).length;
+  if (localN > 0 && !confirm("本机已有 " + localN + " 台机身，仓库里有 " + remoteN + " 台。\n\n"
+      + "继续会用仓库的版本覆盖本机数据，确定吗？")) return;
+
+  save(normalize(r.db));
+  toast("已从仓库恢复 " + remoteN + " 台机身");
+  go("#/");
+}
+
+function saveGhFromForm(){
+  const owner = $("#gh-owner").value.trim();
+  const repo  = $("#gh-repo").value.trim();
+  if (!owner || !repo){ toast("仓库所有者和仓库名都要填"); return; }
+
+  const typed = $("#gh-token").value.trim();        // 留空表示沿用已保存的令牌
+  const old   = getGh();
+  const token = typed || ((old && old.token) || "");
+  if (!token){ toast("要填一枚只读这个仓库的令牌"); return; }
+
+  saveGh({
+    owner, repo, token,
+    path:   $("#gh-path").value.trim()   || GH_DEFAULT_PATH,
+    branch: $("#gh-branch").value.trim() || "main",
+    auto:   !!(old && old.auto)
+  });
+  toast("已保存");
+  render(true);
+}
+
+function clearGhSettings(){
+  if (!confirm("清除本机保存的仓库地址和令牌？仓库里的数据不受影响。")) return;
+  clearGh();
+  toast("已清除");
+  render(true);
+}
+
+function toggleGhAuto(){
+  const c = getGh();
+  if (!c){ toast("先保存仓库设置"); return; }
+  c.auto = !c.auto;
+  saveGh(c);
+  toast(c.auto ? "已开启自动同步" : "已关闭自动同步");
+  render(true);
+}
+
 function exportJSON(){
   const db = load();
   const blob = new Blob([JSON.stringify(db, null, 2)], { type:"application/json" });
@@ -1148,6 +1405,17 @@ function wipe(){
   if (!confirm("会删掉所有机身和记录，且无法恢复。确定？")) return;
   if (!confirm("真的确定？建议先导出备份。")) return;
   localStorage.removeItem(KEY);
+
+  /* 私有仓库里如果还留着一份，下次打开会被自动回灌拉回来 —— 用户会以为「删不掉」。
+     所以这里问一次要不要连远端一起清掉。keep 是合法的选择，只是要讲清楚后果。 */
+  if (getGh() && confirm("私有仓库里还留着一份备份。\n\n"
+      + "点「确定」连仓库里的一起清空。\n"
+      + "点「取消」保留仓库备份 —— 下次打开这个 App 时会自动把它拉回来。")){
+    toast("已清空");
+    ghPush(false).catch(()=>{});
+    go("#/");
+    return;
+  }
   toast("已清空");
   go("#/");
 }
@@ -1183,6 +1451,16 @@ window.addEventListener("hashchange", render);
 })();
 
 render();
+
+/* 到这里为止发生的 save() 都属于启动过程（灌示例数据），不该触发上传。
+   过了这一步才认为「用户动了数据」，允许自动同步。 */
+syncArmed = true;
+ghRehydrate().catch(()=>{});
+
+/* 页面切走 / 被关掉时，把还在防抖窗口里的那次上传立刻发掉，
+   免得「点完过片就锁屏」把这次改动丢掉。 */
+window.addEventListener("pagehide", flushGhPush);
+window.addEventListener("visibilitychange", flushGhPush);
 
 if ("serviceWorker" in navigator && location.protocol === "https:"){
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(()=>{}));

@@ -30,6 +30,15 @@ VIEWS = [
     ("08-统计",        "/?demo=1&c=m6",         "#/stats",       False),
     ("09-编辑机身",     "/?demo=1&c=rollei",     "#/c/rollei/setup", False),
     ("10-空模板首页",   "/",                    "#/",            True),
+    # 配好私有仓库之后会多出「立即上传 / 从仓库拉取 / 自动同步 / 清除」四个按钮，
+    # 是另一套排版，单独出一张。写入的令牌是**编造的占位值**，不是真令牌；
+    # 而且刻意从变量传入，免得在这里留下一段像令牌的东西 ——
+    # 这个文件也在凭据护栏的扫描范围内，界面上也从不回显令牌。
+    ("11-私有仓库已配置", "/?demo=1&c=m6",       "#/settings",    False,
+     "var fake = 'sample' + '-not-a-real-token';"
+     "localStorage.setItem('filmtap.github', JSON.stringify({"
+     "owner:'Escaper929', repo:'film-tap-data', path:'data.json',"
+     "branch:'main', auto:true, token:fake}))"),
 ]
 
 
@@ -48,12 +57,18 @@ def main():
         page.on("console", lambda m: errs.append("console." + m.type + ": " + m.text)
                 if m.type == "error" else None)
 
-        for name, path, hash_, reset in VIEWS:
-            if reset:
+        for row in VIEWS:
+            name, path, hash_, reset = row[0], row[1], row[2], row[3]
+            inject = row[4] if len(row) > 4 else None
+
+            if reset or inject:
                 # 同一个浏览器上下文里本地存储是共享的，
                 # 不主动清掉的话这张"空模板"截出来是上一张的状态。
                 page.goto(BASE + "/", wait_until="load")
                 page.evaluate("() => { try { localStorage.clear() } catch(e){} }")
+                if inject:
+                    page.evaluate("s => eval(s)", inject)
+
             page.goto(BASE + path, wait_until="load")
             if hash_:
                 page.evaluate("h => { location.hash = h }", hash_)
