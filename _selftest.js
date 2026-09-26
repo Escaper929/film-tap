@@ -102,16 +102,16 @@ save(demoData());
 
 const CASES = [
   { name:"机库首页",    search:"",       hash:"#/",
-    must:["Leica M6","尼康 FM2","奥林巴斯 XA2","禄来 3.5F","214 天","示例数据","24/36 张"],
+    must:["Leica M6","尼康 FM2","奥林巴斯 XA2","禄来 3.5F","214 天","示例数据","36 张"],
     mustNot:[] },
   { name:"碰 m6 打开",  search:"?c=m6",  hash:"",
     must:["Kodak Portra 400","EI 1600","推 2 档","92<small>天</small>",
-          "还剩 12 张","过片 ＋1","135 · 36 张"],
-    mustNot:["该冲了"] },
+          "135 · 36 张","换一卷","编辑这卷"],
+    mustNot:["该冲了","过片","还剩 12 张"] },
   { name:"120 机身",    search:"",       hash:"#/c/rollei",
-    must:["禄来 3.5F","120 · 12 张","还剩 7 张","Ilford Delta 100"],
-    mustNot:[] },
-  { name:"拍满的卷",    search:"",       hash:"#/c/xa2",
+    must:["禄来 3.5F","120 · 12 张","Ilford Delta 100"],
+    mustNot:["还剩"] },
+  { name:"久置的卷",    search:"",       hash:"#/c/xa2",
     must:["Kodak ColorPlus 200","214 天","该冲了","偏久"],
     mustNot:[] },
   { name:"未登记新 ID",  search:"",       hash:"#/c/brand-new",
@@ -119,7 +119,7 @@ const CASES = [
     mustNot:[] },
   { name:"换卷表单",    search:"",       hash:"#/c/m6/load",
     must:["换一卷","Kodak Portra 400","Ilford HP5 Plus 400","记进历史","总共多少张"],
-    mustNot:[] },
+    mustNot:["已经拍了多少张"] },
   { name:"编辑当前卷",  search:"",       hash:"#/c/m6/edit",
     must:["编辑这卷",'value="1600"',"推到 1600 拍夜景"],
     mustNot:[] },
@@ -127,12 +127,12 @@ const CASES = [
     must:["编辑机身",'value="Leica"','value="M6"',"135","画幅"],
     mustNot:["新挂件"] },
   { name:"历史记录",    search:"",       hash:"#/c/m6/history",
-    must:["Ilford HP5 Plus 400","Fujifilm C200","22 天","120 天"],
-    mustNot:[] },
+    must:["Ilford HP5 Plus 400","Fujifilm C200","22 天","120 天","36 张"],
+    mustNot:["/36 张"] },
   { name:"统计页",      search:"",       hash:"#/stats",
-    must:["统计","机身总数","当前有卷","已用胶卷","累计快门","188","240",
+    must:["统计","机身总数","当前有卷","已用胶卷",
           "常用胶卷 Top","Ilford HP5 Plus 400","机身状态"],
-    mustNot:[] },
+    mustNot:["累计快门"] },
   { name:"设置与备份",  search:"",       hash:"#/settings",
     must:["导出备份","已登记的机身 ID","?c=","清空全部数据",
           "同步到自己的 NAS","WebDAV 目录地址","保存同步设置",
@@ -164,30 +164,57 @@ for (const cs of CASES) {
         (cs.must.length + " 项断言 / " + out.length + " 字符"));
 }
 
-/* ── 过片计数 ── */
+/* ══════════════════════════════════════════════════════════
+   过片计数已下线（机身自己就能看出拍了多少张，不需要在 App 里再记一遍）。
+   删功能最容易留下的不是报错，是**半截残骸**：某个入口没删干净、
+   某个视图还在算一个永远不会变的数、老数据里的字段还在被同步来同步去。
+   所以这里正面钉住「它真的没了」，而不是只删掉原来的用例。
+   ══════════════════════════════════════════════════════════ */
 try {
+  const noFn = typeof advanceShot === "undefined" && typeof filmBar === "undefined";
   __setLoc("", "#/c/m6"); render();
-  const before = __app().indexOf("还剩 12 张") >= 0;
-  advanceShot("m6");
-  const after  = __app().indexOf("还剩 11 张") >= 0 && __app().indexOf("<b>25</b> / 36 张") >= 0;
-  const stored = load().cameras.m6.loaded.shots === 25;
-  check("过片 ＋1", before && after && stored,
-        "前=" + before + " 后=" + after + " 落库=" + stored);
-} catch (e) { check("过片 ＋1", false, "抛异常 " + e.message); }
-
-/* ── 拍满后封顶 ── */
-try {
-  const db = load();
-  db.cameras.m6.loaded.shots = 35;
-  save(db);
-  __setLoc("", "#/c/m6"); render();
-  advanceShot("m6");
   const ui = __app();
-  const showsFull = ui.indexOf("这卷已经拍满") >= 0 && ui.indexOf("这卷拍满了，可以回卷") >= 0;
-  advanceShot("m6");                                   // 再点一次不应越界
-  const capped = load().cameras.m6.loaded.shots === 36;
-  check("拍满封顶", showsFull && capped, "提示=" + showsFull + " 不越界=" + capped);
-} catch (e) { check("拍满封顶", false, "抛异常 " + e.message); }
+  const noUi = ui.indexOf("过片") < 0 && ui.indexOf("还剩") < 0 && ui.indexOf('id="f-shots"') < 0;
+  __setLoc("", "#/c/m6/edit"); render();
+  const noField = __app().indexOf("已经拍了多少张") < 0;
+  check("计数功能已摘干净", noFn && noUi && noField,
+        "函数已移除=" + noFn + " 机身页无残留=" + noUi + " 表单无输入框=" + noField);
+} catch (e) { check("计数功能已摘干净", false, "抛异常 " + e.message); }
+
+/* ── 统计页只该有三格 ──
+   statgrid 现在是 3 列，正好排满一行；再多一格就会掉到第二行、
+   留出「3 + 1」的空洞。用计数而不是「有没有累计快门几个字」来钉，
+   这样以后换掉某一格的名字，这条断言仍然管用。 */
+try {
+  __setLoc("", "#/stats"); render();
+  const ui = __app();
+  const n = (ui.match(/<div class="stat">/g) || []).length;
+  check("统计页三格排满一行", n === 3, "实际 " + n + " 格");
+} catch (e) { check("统计页三格排满一行", false, "抛异常 " + e.message); }
+
+/* ── 老数据里的 shots 会被清掉 ──
+   计数下线了，可老库（本机 localStorage、导出的 JSON、私有仓库里的 data.json）
+   里还留着 shots。不清掉的话它会一直跟着导出和同步来回跑，
+   以后有人看到这个字段会以为它还在生效 —— 而没有任何代码读它。
+   注意 total 必须留下：那是「这卷多少张」，和计数是两回事。 */
+try {
+  localStorage.removeItem("filmtap.v1.corrupt");
+  localStorage.setItem("filmtap.v1", JSON.stringify({ version:2, films:{}, cameras:{
+    m6:{ id:"m6", name:"Leica M6", format:"135",
+         history:[ { stock:"Ilford HP5 Plus 400", shots:36, total:36 } ],
+         loaded:{ stock:"Kodak Portra 400", iso:400, ei:null, loadedAt:"2026-01-01",
+                  shots:20, total:36, note:"" } } } }));
+  const db = load();
+  const gone = !("shots" in db.cameras.m6.loaded) &&
+               db.cameras.m6.history.every(r => !("shots" in r));
+  const kept = db.cameras.m6.loaded.total === 36 &&
+               db.cameras.m6.history[0].total === 36;
+  check("老数据里的 shots 被清掉", gone && kept,
+        "字段清除=" + gone + " 张数保留=" + kept);
+  /* 上面把本机换成了手工构造的一台机身，后面的用例还要用示例数据。
+     跟「装卷扣库存」一样，谁改动了共用 fixture 谁自己把它还原回去。 */
+  save(demoData());
+} catch (e) { check("老数据里的 shots 被清掉", false, "抛异常 " + e.message); }
 
 /* ── 装卷归档流程 ── */
 try {
@@ -196,7 +223,6 @@ try {
   __setValue("#f-stock", "Adox CMS 20 II");
   __setValue("#f-iso", "20");
   __setValue("#f-ei", "");
-  __setValue("#f-shots", "36");
   __setValue("#f-note", "超细颗粒");
   saveLoad("fm2", false);
   const fm2 = load().cameras.fm2;
@@ -209,16 +235,25 @@ try {
         "新卷=" + ok1 + " 旧卷入史=" + ok2 + " 卸卷日期=" + ok3 + " 张数=" + ok4);
 } catch (e) { check("装卷归档流程", false, "抛异常 " + e.message); }
 
-/* ── 已拍张数不得超过总张数 ── */
+/* ── 总张数留空要回落到机身画幅的默认值 ──
+   计数下线之后，「这一卷多少张」是这一卷上唯一一个数字字段，
+   而它会出现在机身页的标签和历史记录里。
+   留着空、填 0、填了非数字，都不该把它变成 0 ——
+   （那样标签会直接不显示，用户还以为装卷失败了。）DEFAULT_FRAMES 那层兜底得真的生效。 */
 try {
-  __setLoc("", "#/c/fm2/edit"); render();
-  __setValue("#f-stock", "Kodak Portra 400");
-  __setValue("#f-shots", "99");
-  __setValue("#f-total", "36");
-  saveLoad("fm2", true);
-  const kept = load().cameras.fm2.loaded.shots === 36;   // 上一轮装卷时是 36，不该被 99 覆盖
-  check("张数越界被拒", kept, "当前 shots=" + load().cameras.fm2.loaded.shots);
-} catch (e) { check("张数越界被拒", false, "抛异常 " + e.message); }
+  const editTotal = v => {
+    __setLoc("", "#/c/fm2/edit"); render();
+    __setValue("#f-stock", "Kodak Portra 400");
+    __setValue("#f-total", v);
+    saveLoad("fm2", true);
+    return load().cameras.fm2.loaded.total;
+  };
+  const a = editTotal("")   === 36;    // 留空 → 135 的默认
+  const b = editTotal("0")  === 36;    // 填 0 → 同上
+  const c = editTotal("24") === 24;    // 填了就照填的来
+  check("总张数留空回落到画幅默认", a && b && c,
+        "留空=" + a + " 填0=" + b + " 填24=" + c);
+} catch (e) { check("总张数留空回落到画幅默认", false, "抛异常 " + e.message); }
 
 /* ── 同步设置：只落本机、不进源码 ── */
 try {
@@ -495,7 +530,7 @@ try {
 /* ══════════════════════════════════════════════════════════
    机身 ID 不能逃出 onclick —— 这是本项目最大的一个注入面。
    ID 从 URL 上的 ?c= 来，而那正是 NFC 标签里写的内容，标签可能是别人给的；
-   它又会被拼进 onclick 属性里（saveSetup('…') / advanceShot('…') / go('…')）。
+   它又会被拼进 onclick 属性里（saveSetup('…') / copySlip('…') / go('…')）。
    ⚠️ encodeURIComponent 挡不住这件事（它不编码 ! ' ( ) * ），
       而 esc() 也挡不住（&#39; 会被 HTML 解析器还原成 '，字符串照样在 JS 里被闭掉）。
 
@@ -506,7 +541,7 @@ try {
 try {
   /* onclick 里会出现的处理函数名。把它们做成 new Function 的具名参数，
      被测代码里引用到的名字就都会解析到替身，而不是去全局找真的实现。 */
-  const PARAMS = ["go","addCamera","loadDemo","advanceShot","pickFormat","copySlip",
+  const PARAMS = ["go","addCamera","loadDemo","pickFormat","copySlip",
     "saveSetup","saveLoad","clearFilm","pickFilm","setFilmFormat","setImportMode",
     "runImport","resetImport","importFromPaste","onImportFile","setImportMap",
     "exportJSON","importJSON",
@@ -564,7 +599,7 @@ try {
   const db = load();
   db.cameras[EVIL] = { id:EVIL, name:"坏 ID 的机身", format:"135", history:[],
     loaded:{ stock:"Kodak Portra 400", iso:400, ei:null, loadedAt:todayLocal(),
-             shots:3, total:36, note:"" } };
+             total:36, note:"" } };
   const EVILFILM = "x');alert(1)//@135";
   db.films = {}; db.films[EVILFILM] = normalizeFilm({ id:EVILFILM,
     stock:"x');alert(1)//", format:"135", count:2 });
@@ -664,7 +699,7 @@ try {
   localStorage.removeItem("filmtap.v1.corrupt");
   localStorage.setItem("filmtap.v1", JSON.stringify({ version:2, films:{}, cameras:{
     m6:{ id:"m6", name:"Leica M6", format:"135", loaded:null,
-         history:[ null, "这不是一卷", { stock:"Kodak Portra 400", shots:36, total:36 } ] } } }));
+         history:[ null, "这不是一卷", { stock:"Kodak Portra 400", total:36 } ] } } }));
   let threw = false, out = "";
   try { __setLoc("", "#/c/m6/history"); render(); out = __app(); }
   catch (e){ threw = true; }
@@ -693,7 +728,6 @@ try {
   __setValue("#f-stock", "Ilford HP5 Plus 400");
   __setValue("#f-iso", "400");
   __setValue("#f-ei", "");
-  __setValue("#f-shots", "0");
   __setValue("#f-total", "36");
   __setValue("#f-date", "2026-09-24");
   __setValue("#f-note", "");
@@ -707,7 +741,6 @@ try {
   /* 库存里没有的型号：不能因为库存对不上就拦住装卷 */
   __setLoc("", "#/c/fm2/load"); render();
   __setValue("#f-stock", "没有入库的某个卷");
-  __setValue("#f-shots", "0");
   __setValue("#f-total", "36");
   saveLoad("fm2", false);
   const fm2 = load().cameras.fm2.loaded;
@@ -738,7 +771,7 @@ try {
     'headers.Authorization = "Bearer " + token',            // 正确写法：令牌走变量，不进源码
     "https://api.github.com/repos/Escaper929/film-tap-data/contents/data.json",
     "film-tap",
-    "还剩 12 张"
+    "换一卷"
   ];
   const caught = BAD_SAMPLES.every(s => CRED_RULES.some(([re]) => re.test(s)));
   const quiet  = GOOD_SAMPLES.every(s => !CRED_RULES.some(([re]) => re.test(s)));

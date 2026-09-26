@@ -81,21 +81,12 @@ h2{font-size:15px;font-weight:500;color:var(--ink-2);margin:28px 0 10px}
 
 .note{padding:14px 20px;border-top:1px solid var(--line);font-size:14px;color:var(--ink-2);white-space:pre-wrap}
 
-/* 张数进度 */
-.filmbar{padding:15px 20px;border-top:1px solid var(--line)}
-.filmbar .track{height:7px;border-radius:999px;background:var(--surface-2);overflow:hidden}
-.filmbar .fill{height:100%;border-radius:999px;background:var(--accent);transition:width .18s ease}
-.filmbar .fill.full{background:var(--ok)}
-.filmbar .cap{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:9px;font-size:13px;color:var(--ink-2)}
-.filmbar .cap b{font-size:17px;font-weight:500;color:var(--ink);font-variant-numeric:tabular-nums}
-
 /* 统计 */
-.statgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
-.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
-.stat .n{font-size:27px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+/* 三格而不是两格：计数砍掉后只剩三个数字，排成 1 行比 2+1 少一个空洞 */
+.statgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:15px 13px}
+.stat .n{font-size:26px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .stat .l{font-size:12.5px;color:var(--ink-3);margin-top:3px}
-.bar{height:7px;border-radius:999px;background:var(--surface-2);overflow:hidden;margin-top:2px}
-.bar i{display:block;height:100%;border-radius:999px;background:var(--accent)}
 
 /* 按钮 */
 .btn{
@@ -229,7 +220,9 @@ function normalizeRoll(r, camFormat){
   r.stock  = r.stock || "";
   r.iso    = Number(r.iso) || null;
   r.ei     = Number(r.ei)  || null;
-  r.shots  = Number(r.shots) || 0;
+  /* 过片计数已经下线（机身自己就能看出拍了多少张）。
+     顺手把老库里留着的 shots 删掉 —— 留着它会一直跟着导出文件和同步来回跑。 */
+  delete r.shots;
   r.total  = Number(r.total) || (DEFAULT_FRAMES[camFormat] || 0);
   r.note   = r.note || "";
   return r;
@@ -415,20 +408,6 @@ function ageTag(days){
   return null;
 }
 
-/* 这一卷拍了多少 —— 条 + 「还剩 N 张」 */
-function filmBar(shot, total){
-  const t = Number(total) || 0;
-  if (!t) return "";
-  const s = Math.max(0, Number(shot) || 0);
-  const done = s >= t;
-  const pct = Math.min(100, Math.round(s / t * 100));
-  return '<div class="filmbar">'
-       +   '<div class="track"><div class="fill' + (done ? ' full' : '') + '" style="width:' + pct + '%"></div></div>'
-       +   '<div class="cap"><span>' + (done ? "这卷拍满了，可以回卷" : "还剩 " + (t - s) + " 张") + '</span>'
-       +     '<span><b>' + s + '</b> / ' + t + ' 张</span></div>'
-       + '</div>';
-}
-
 function newCamId(){
   return "cam-" + Math.random().toString(36).slice(2,7);
 }
@@ -477,39 +456,39 @@ function demoData(){
         id: "m6", name: "Leica M6", note: "黑色 0.72 取景器", createdAt: now,
         brand: "Leica", model: "M6", format: "135",
         loaded: { stock:"Kodak Portra 400", iso:400, ei:1600, loadedAt:daysAgo(92),
-                  shots:24, total:36, note:"推到 1600 拍夜景，冲扫时记得加 2 档" },
+                  total:36, note:"推到 1600 拍夜景，冲扫时记得加 2 档" },
         history: [
           { stock:"Ilford HP5 Plus 400", iso:400, ei:400, loadedAt:daysAgo(260),
-            unloadedAt:daysAgo(238), shots:36, total:36, note:"" },
+            unloadedAt:daysAgo(238), total:36, note:"" },
           { stock:"Fujifilm C200", iso:200, ei:200, loadedAt:daysAgo(420),
-            unloadedAt:daysAgo(300), shots:36, total:36, note:"" }
+            unloadedAt:daysAgo(300), total:36, note:"" }
         ]
       },
       fm2: {
         id: "fm2", name: "尼康 FM2", note: "银色，挂 50/1.4", createdAt: now,
         brand: "Nikon", model: "FM2", format: "135",
         loaded: { stock:"Ilford HP5 Plus 400", iso:400, ei:400, loadedAt:daysAgo(12),
-                  shots:8, total:36, note:"" },
+                  total:36, note:"" },
         history: [
           { stock:"Kodak Tri-X 400", iso:400, ei:400, loadedAt:daysAgo(120),
-            unloadedAt:daysAgo(15), shots:36, total:36, note:"" }
+            unloadedAt:daysAgo(15), total:36, note:"" }
         ]
       },
       xa2: {
         id: "xa2", name: "奥林巴斯 XA2", note: "", createdAt: now,
         brand: "Olympus", model: "XA2", format: "135",
         loaded: { stock:"Kodak ColorPlus 200", iso:200, ei:200, loadedAt:daysAgo(214),
-                  shots:31, total:36, note:"口袋里还有 5 张没拍完" },
+                  total:36, note:"口袋里还有 5 张没拍完" },
         history: []
       },
       rollei: {
         id: "rollei", name: "禄来 3.5F", note: "6x6，腰平取景", createdAt: now,
         brand: "Rollei", model: "3.5F", format: "120",
         loaded: { stock:"Ilford Delta 100", iso:100, ei:100, loadedAt:daysAgo(40),
-                  shots:5, total:12, note:"12 张一卷，省着拍" },
+                  total:12, note:"12 张一卷，省着拍" },
         history: [
           { stock:"Kodak Portra 160", iso:160, ei:160, loadedAt:daysAgo(150),
-            unloadedAt:daysAgo(96), shots:12, total:12, note:"" }
+            unloadedAt:daysAgo(96), total:12, note:"" }
         ]
       }
     },
@@ -835,17 +814,12 @@ function renderHome(db){
       const d = r && r.loadedAt ? daysSince(r.loadedAt) : null;
       const stockTxt = r && r.stock ? r.stock : "空机";
       const warn = d != null && d >= 180;
-      const bar = (r && r.total)
-        ? '<div class="bar" style="margin-top:7px"><i style="width:' +
-          Math.min(100, Math.round((r.shots || 0) / r.total * 100)) + '%"></i></div>'
-        : '';
       h += '<div class="item cam"' + tapRow('#/c/' + encodeURIComponent(c.id)) + '>'
          +   '<div class="body">'
          +     '<div class="name">' + esc(c.name || "未命名机身") + '</div>'
          +     '<div class="roll">' + esc(stockTxt)
-         +       (r && r.total ? ' · ' + (r.shots || 0) + '/' + r.total + ' 张' : '')
+         +       (r && r.total ? ' · ' + r.total + ' 张' : '')
          +       (r && r.note ? ' · ' + esc(r.note.slice(0,20)) : '') + '</div>'
-         +     bar
          +   '</div>'
          +   '<div class="age"' + (warn ? ' style="color:var(--warn)"' : '') + '>'
          +     (d != null ? d + " 天" : "") + '</div>'
@@ -924,17 +898,15 @@ function renderCam(db, id){
        +     '<div class="metric"><div class="k">已装</div><div class="v' + (at ? " hot" : "") + '">'
        +       (d != null ? d + '<small>天</small>' : '—') + '</div></div>'
        +   '</div>';
-    h += filmBar(r.shots, r.total);
     if (r.note) h += '<div class="note">' + esc(r.note) + '</div>';
     h += '</div>';
 
     if (pp) h += '<div class="banner i">这卷按 EI ' + r.ei + ' 拍（' + pp.text + '），送冲扫时记得跟店家说一声。</div>';
 
-    const full = r.total && r.shots >= r.total;
-    h += '<button class="btn primary"' + (full ? ' disabled style="opacity:.4"' : '')
-       +   ' onclick="advanceShot(\'' + jsq(id) + '\')">' + (full ? "这卷已经拍满" : "过片 ＋1") + '</button>';
+    /* 计数没了之后这一页就没有「主按钮」了。换卷是这里唯一改变状态的常规动作，
+       给它实心样式，免得三颗按钮一样重、看不出该点哪个。 */
     h += '<div class="row">'
-       +   '<button class="btn" ' + goAttr('#/c/' + encodeURIComponent(id) + '/load') + '>换一卷</button>'
+       +   '<button class="btn primary" ' + goAttr('#/c/' + encodeURIComponent(id) + '/load') + '>换一卷</button>'
        +   '<button class="btn" ' + goAttr('#/c/' + encodeURIComponent(id) + '/edit') + '>编辑这卷</button>'
        + '</div>';
     h += '<button class="btn ghost" onclick="copySlip(\'' + jsq(id) + '\')">复制冲扫备注</button>';
@@ -1034,9 +1006,6 @@ function renderLoad(db, id, isEdit){
      + '<div class="hint">按机身画幅 ' + esc(camFmt) + ' 预填成 ' + defTotal + ' 张 —— '
      +   '135 常见 36 或 24；120 要看画幅：6x6 是 12、6x7 是 10、645 是 16。不对就改。</div>';
 
-  h += '<label>已经拍了多少张（可选）</label>'
-     + '<input id="f-shots" type="number" inputmode="numeric" placeholder="0" value="' + esc(r.shots || "") + '">';
-
   h += '<label>备注（可选）</label>'
      + '<textarea id="f-note" placeholder="例如 推到 1600 拍夜景，冲扫时加 2 档">' + esc(r.note || "") + '</textarea>';
 
@@ -1069,7 +1038,7 @@ function renderHistory(db, id){
          +     '<span class="b">' + (dur != null ? dur + " 天" : "") + '</span></div>'
          +   '<div class="l2">' + esc(span)
          +     (r.iso ? ' · ISO ' + r.iso : "") + (pp ? ' · ' + pp.text : "")
-         +     (r.total ? ' · ' + (r.shots || 0) + '/' + r.total + ' 张' : "") + '</div>'
+         +     (r.total ? ' · ' + r.total + ' 张' : "") + '</div>'
          +   (r.note ? '<div class="l2" style="color:var(--ink-3)">' + esc(r.note) + '</div>' : '')
          + '</div>';
     }
@@ -1088,12 +1057,12 @@ function daysSince2(a, b){
 function renderStats(db){
   const cams = Object.values(db.cameras);
 
-  let used = 0, shots = 0, capacity = 0;
+  /* 只统计「和计数器无关」的数：台数、卷数、还有已经拍过的那部分。
+     used 只数已经卸下来的卷 —— 正在拍的那卷还没「用掉」。 */
+  let used = 0;
   const stockCount = {};
   const tally = r => {
     if (!r) return;
-    shots    += Number(r.shots) || 0;
-    capacity += Number(r.total) || 0;
     if (r.stock) stockCount[r.stock] = (stockCount[r.stock] || 0) + 1;
   };
 
@@ -1119,13 +1088,7 @@ function renderStats(db){
      +   '<div class="stat"><div class="n">' + cams.length + '</div><div class="l">机身总数</div></div>'
      +   '<div class="stat"><div class="n">' + loadedCams + '</div><div class="l">当前有卷</div></div>'
      +   '<div class="stat"><div class="n">' + used + '</div><div class="l">已用胶卷</div></div>'
-     +   '<div class="stat"><div class="n">' + shots + '</div><div class="l">累计快门</div></div>'
      + '</div>';
-
-  if (capacity > 0){
-    h += '<div class="banner i">按满卷算能拍 ' + capacity + ' 张，已经拍了 ' + shots + ' 张，'
-       +   '大约走完 ' + Math.round(Math.min(1, shots / capacity) * 100) + '%。</div>';
-  }
 
   if (top.length){
     h += '<h2>常用胶卷 Top ' + top.length + '</h2><div class="list">';
@@ -1141,14 +1104,12 @@ function renderStats(db){
   for (const c of cams){
     const r = c.loaded;
     const d = r && r.loadedAt ? daysSince(r.loadedAt) : null;
-    const pct = r && r.total ? Math.min(100, Math.round((r.shots || 0) / r.total * 100)) : null;
     h += '<div class="item cam"' + tapRow('#/c/' + encodeURIComponent(c.id)) + '>'
        +   '<div class="body">'
        +     '<div class="name">' + esc(c.name || "未命名机身") + '</div>'
        +     '<div class="roll">' + (r
-                ? esc(r.stock || "未填写") + (r.total ? ' · ' + (r.shots || 0) + '/' + r.total + ' 张' : '')
+                ? esc(r.stock || "未填写") + (r.total ? ' · ' + r.total + ' 张' : '')
                 : "空机") + '</div>'
-       +     (pct === null ? '' : '<div class="bar" style="margin-top:7px"><i style="width:' + pct + '%"></i></div>')
        +   '</div>'
        +   '<div class="age"' + (d != null && d >= 180 ? ' style="color:var(--warn)"' : '') + '>'
        +     (d != null ? d + " 天" : "") + '</div>'
@@ -1783,15 +1744,9 @@ function saveLoad(id, isEdit){
     iso:  Number($("#f-iso").value)  || null,
     ei:   Number($("#f-ei").value)   || null,
     loadedAt: $("#f-date").value || todayLocal(),
-    shots: Number($("#f-shots").value) || 0,
     total: Number($("#f-total").value) || DEFAULT_FRAMES[c.format] || 0,
     note: $("#f-note").value.trim()
   };
-
-  if (roll.total && roll.shots > roll.total){
-    toast("已拍张数不能超过总张数");
-    return;
-  }
 
   if (!isEdit && c.loaded){
     c.history = c.history || [];
@@ -1829,24 +1784,6 @@ function clearFilm(id){
   save(db);
   toast("已标记为空机");
   go("#/c/" + encodeURIComponent(id));
-}
-
-/* 过片 ＋1 —— 最高频的动作，所以不跳页也不回滚到顶部，点一下原地更新 */
-function advanceShot(id){
-  const db = load();
-  const c = db.cameras[id];
-  if (!c || !c.loaded) return;
-  const r = c.loaded;
-  if (r.total && r.shots >= r.total){ toast("这卷已经拍满了，先回卷"); return; }
-
-  r.shots = (Number(r.shots) || 0) + 1;
-  save(db);
-
-  if (!r.total)                       toast("第 " + r.shots + " 张");
-  else if (r.shots >= r.total)        toast("第 " + r.shots + " 张 —— 拍满了，记得回卷");
-  else                                toast("第 " + r.shots + " / " + r.total + " 张");
-
-  render(true);
 }
 
 function copySlip(id){
@@ -2252,7 +2189,7 @@ async function ghPush(quiet, force){
   return false;
 }
 
-/* 变更后的自动上传。防抖 2 秒：连着点过片不会打成一串提交。 */
+/* 变更后的自动上传。防抖 2 秒：连着改几处不会打成一串提交。 */
 let ghTimer = null;
 function scheduleGhPush(){
   const c = getGh();
@@ -2444,7 +2381,7 @@ syncArmed = true;
 ghRehydrate().catch(()=>{});
 
 /* 页面切走 / 被关掉时，把还在防抖窗口里的那次上传立刻发掉，
-   免得「点完过片就锁屏」把这次改动丢掉。 */
+   免得「改完就锁屏」把这次改动丢掉。 */
 window.addEventListener("pagehide", flushGhPush);
 window.addEventListener("visibilitychange", flushGhPush);
 
