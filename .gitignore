@@ -7,3 +7,8 @@ node_modules/
 .env.*
 __pycache__/
 *.pyc
+
+# 本地工作笔记（含项目历史与踩坑记录）。这个仓库是公开的，
+# 而 _selftest.js 的凭据护栏只扫它自己那份固定文件列表 —— 这里不在扫描范围内，
+# 所以更不该让 git add -A 顺手把它带上去。
+.workbuddy/

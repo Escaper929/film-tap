@@ -136,7 +136,8 @@ const CASES = [
   { name:"设置与备份",  search:"",       hash:"#/settings",
     must:["导出备份","已登记的机身 ID","?c=","清空全部数据",
           "同步到自己的 NAS","WebDAV 目录地址","保存同步设置",
-          "同步到私有仓库","访问令牌","保存仓库设置"],
+          "同步到私有仓库","访问令牌","保存仓库设置",
+          "验证并登录","建一个私有仓库","建一枚 fine-grained 令牌"],
     mustNot:["192.168.","WEBDAV_AUTH","Authorization: Basic","Bearer ",
              "ghp_","gho_","github_pat_"] }
 ];
@@ -491,6 +492,200 @@ try {
         "GBK 认出来=" + ok1 + " 行对=" + ok2 + " UTF-8+BOM=" + ok3);
 } catch (e) { check("编码兜底（GBK）", false, "抛异常 " + e.message); }
 
+/* ══════════════════════════════════════════════════════════
+   机身 ID 不能逃出 onclick —— 这是本项目最大的一个注入面。
+   ID 从 URL 上的 ?c= 来，而那正是 NFC 标签里写的内容，标签可能是别人给的；
+   它又会被拼进 onclick 属性里（saveSetup('…') / advanceShot('…') / go('…')）。
+   ⚠️ encodeURIComponent 挡不住这件事（它不编码 ! ' ( ) * ），
+      而 esc() 也挡不住（&#39; 会被 HTML 解析器还原成 '，字符串照样在 JS 里被闭掉）。
+
+   所以断言不能只看「渲染结果里有没有那几个字」—— 转义之后那几个字还在。
+   得把拼出来的那段 JS 真的喂给引擎跑一遍，看它是不是只调了一次处理函数、
+   有没有碰到 document。这才能区分「转义了」和「没转义」。
+   ══════════════════════════════════════════════════════════ */
+try {
+  /* onclick 里会出现的处理函数名。把它们做成 new Function 的具名参数，
+     被测代码里引用到的名字就都会解析到替身，而不是去全局找真的实现。 */
+  const PARAMS = ["go","addCamera","loadDemo","advanceShot","pickFormat","copySlip",
+    "saveSetup","saveLoad","clearFilm","pickFilm","setFilmFormat","setImportMode",
+    "runImport","resetImport","importFromPaste","onImportFile","setImportMap",
+    "exportJSON","importJSON",
+    "saveDavFromForm","syncToNas","restoreFromNas","clearDavSettings","saveGhFromForm",
+    "ghPush","ghPull","toggleGhAuto","clearGhSettings","wipe","exportCorrupt",
+    "verifyGh","listGhRepos","useGhRepo",
+    "dropCorrupt","deleteFilm","saveFilm","updatePP","document"];
+
+  /* 属性在交给 JS 之前，浏览器会先把 HTML 实体还原成字符 */
+  function unent(s){
+    return String(s).replace(/&quot;/g, String.fromCharCode(34))
+                    .replace(/&#39;/g, String.fromCharCode(39))
+                    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  }
+
+  /* 把一份渲染结果里所有 onclick 都跑一遍。
+     leak = 有属性跑出了处理函数之外的东西（改了 document，或抛异常，或没调用/调了多次） */
+  function runHandlers(html){
+    const trip = { title: "safe" };
+    const args = [];
+    let leak = false, calls = 0, seen = 0;
+    /* 顺带把 onchange / oninput 也扫了 —— 现在它们只接数字和 this，
+       但哪天有人往里塞了数据，这条断言应该自动管住。 */
+    const re = /\bon(?:click|change|input|blur|focus)="([^"]*)"/g;
+    let m;
+    while ((m = re.exec(html))){
+      const code = unent(m[1]);
+      const before = calls;
+      const feed = PARAMS.map(n => n === "document"
+        ? trip
+        : (...a) => { calls++; args.push(a); });
+      seen++;
+      try { new Function(PARAMS.join(","), code).apply(null, feed); }
+      catch (e){ leak = true; }
+      if (calls - before !== 1) leak = true;      // 每个 onclick 恰好一次调用
+      if (trip.title !== "safe") leak = true;     // 有东西在调用之外被执行了
+    }
+    return { leak, args, seen };
+  }
+
+  const EVIL = "x');document.title='PWNED';//";
+
+  /* ① 还没登记的挂件 —— 这条路是 renderSetup，ID 直接落进 saveSetup('…') */
+  __setLoc("?c=" + encodeURIComponent(EVIL), "");
+  render();
+  const r1 = runHandlers(__app());
+  const ok1 = !r1.leak && r1.seen > 0;
+  /* payload 必须原样、完整地被当成**一个字符串**传下去：
+     少一个字符就说明转义把用户的内容吃掉了，那和没转义一样是 bug。 */
+  const carried = r1.args.filter(a => typeof a[0] === "string" && a[0].indexOf("PWNED") >= 0);
+  const ok2 = carried.length >= 1 && carried.every(a => a[0] === EVIL);
+
+  /* ② 已经登记过的机身，以及库存里带引号的型号 ——
+     这两条路上的数据可能来自导入的 JSON 或私有仓库，不经过 parseRoute */
+  const db = load();
+  db.cameras[EVIL] = { id:EVIL, name:"坏 ID 的机身", format:"135", history:[],
+    loaded:{ stock:"Kodak Portra 400", iso:400, ei:null, loadedAt:todayLocal(),
+             shots:3, total:36, note:"" } };
+  const EVILFILM = "x');alert(1)//@135";
+  db.films = {}; db.films[EVILFILM] = normalizeFilm({ id:EVILFILM,
+    stock:"x');alert(1)//", format:"135", count:2 });
+  save(db);
+
+  const VIEWS = ["#/", "#/stats", "#/settings", "#/films", "#/films/new",
+                 "#/films/import",
+                 "#/films/edit/" + encodeURIComponent(EVILFILM),
+                 "#/c/" + encodeURIComponent(EVIL),
+                 "#/c/" + encodeURIComponent(EVIL) + "/load",
+                 "#/c/" + encodeURIComponent(EVIL) + "/edit",
+                 "#/c/" + encodeURIComponent(EVIL) + "/history",
+                 "#/c/" + encodeURIComponent(EVIL) + "/setup"];
+  const bad = [];
+  for (const v of VIEWS){
+    __setLoc("", v);
+    try { render(); } catch (e){ bad.push(v + "(抛异常)"); continue; }
+    if (runHandlers(__app()).leak) bad.push(v);
+  }
+
+  /* 设置页还有两种状态平时渲染不到，得单独扫：
+     ① 已登录且列到了仓库（比未登录那屏多好几个 onclick）
+     ② 登录了但还没选仓库（走「列出我的私有仓库」那条分支）
+     ⚠️ 扫完必须把 filmtap.github 还原 —— 后面「回灌只在空库发生」那些用例
+        依赖「此刻到底有没有配仓库」，留一份假的进去会让它们测出假结果。 */
+  const keepGh = localStorage.getItem("filmtap.github");
+  const STATES = [
+    { note:"已登录+有仓库列表", cfg:{ owner:"o", repo:"r", token:"t", login:"me", auto:false },
+      repos:[{ full_name:"o/r", private:true }] },
+    { note:"登录未选仓库",      cfg:{ token:"t", login:"me", auto:false }, repos:null }
+  ];
+  for (const st of STATES){
+    saveGh(st.cfg);
+    ghRepos = st.repos;
+    __setLoc("", "#/settings");
+    try { render(); } catch (e){ bad.push("#/settings(" + st.note + ",抛异常)"); continue; }
+    if (runHandlers(__app()).leak) bad.push("#/settings(" + st.note + ")");
+  }
+  ghRepos = null;
+  if (keepGh === null) localStorage.removeItem("filmtap.github");
+  else                 localStorage.setItem("filmtap.github", keepGh);
+
+  const ok3 = bad.length === 0;
+
+  check("机身 ID 不能逃出 onclick", ok1 && ok2 && ok3,
+        "挂件页无泄漏=" + ok1 + " 参数完整=" + ok2 +
+        (bad.length ? " 有泄漏的页面=" + bad.join(" ") : " " + VIEWS.length + " 个页面全干净=" + ok3));
+
+  localStorage.removeItem("filmtap.v1.corrupt");
+} catch (e) { check("机身 ID 不能逃出 onclick", false, "抛异常 " + e.message); }
+
+/* ══════════════════════════════════════════════════════════
+   读不出来的数据不能被静默丢掉。
+   以前 load() 解析失败就直接返回空库，界面上和「真的没数据」一模一样；
+   用户接着随手记一台机身，save() 就把坏掉的那份永久覆盖了。
+   现在要求：原文留一份、界面说清楚、后面的写入不顶掉它。
+   ══════════════════════════════════════════════════════════ */
+try {
+  localStorage.removeItem("filmtap.v1");
+  localStorage.removeItem("filmnfc.v1");
+  localStorage.removeItem("filmtap.v1.corrupt");
+
+  const broken = '{"version":2,"cameras":{"m6":{"id":"m6","name":"Leica';
+  localStorage.setItem("filmtap.v1", broken);
+
+  const d = load();
+  const ok1 = Object.keys(d.cameras).length === 0;                    // 读不出来 → 空库
+  const ok2 = localStorage.getItem("filmtap.v1.corrupt") === broken;  // 原文留了一份
+
+  __setLoc("", "#/"); render();
+  const ok3 = __app().indexOf("没能读出来") >= 0;                      // 首页露横幅
+  __setLoc("", "#/settings"); render();
+  const ok4 = __app().indexOf("没能读出来") >= 0;                      // 设置页也露
+
+  /* 用户接着记了一台机身 —— 坏掉的那份还在 */
+  const d2 = load();
+  d2.cameras.newbie = { id:"newbie", name:"新机身", format:"135", loaded:null, history:[] };
+  save(d2);
+  const ok5 = localStorage.getItem("filmtap.v1.corrupt") === broken;
+  const ok6 = JSON.parse(localStorage.getItem("filmtap.v1")).cameras.newbie.name === "新机身";
+
+  /* 已经有留底时，后面更残缺的那次失败不能把它盖掉 */
+  localStorage.setItem("filmtap.v1", "{坏");
+  load();
+  const ok7 = localStorage.getItem("filmtap.v1.corrupt") === broken;
+
+  localStorage.removeItem("filmtap.v1.corrupt");
+  check("损坏数据留底不静默丢", ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7,
+        "空库=" + ok1 + " 留底=" + ok2 + " 首页横幅=" + ok3 + " 设置横幅=" + ok4 +
+        " 写入后仍在=" + ok5 + " 新数据可写=" + ok6 + " 不被残片顶掉=" + ok7);
+} catch (e) { check("损坏数据留底不静默丢", false, "抛异常 " + e.message); }
+
+/* ── 历史里混进坏记录：不能整页空白 ──
+   以前 normalizeRoll 对 null 返回 null 而数组照留，历史页在 r.stock 上抛异常，
+   用户看到的是白屏 —— 比「少一卷」糟得多。 */
+try {
+  localStorage.removeItem("filmtap.v1.corrupt");
+  localStorage.setItem("filmtap.v1", JSON.stringify({ version:2, films:{}, cameras:{
+    m6:{ id:"m6", name:"Leica M6", format:"135", loaded:null,
+         history:[ null, "这不是一卷", { stock:"Kodak Portra 400", shots:36, total:36 } ] } } }));
+  let threw = false, out = "";
+  try { __setLoc("", "#/c/m6/history"); render(); out = __app(); }
+  catch (e){ threw = true; }
+  const ok1 = !threw && out.indexOf("Kodak Portra 400") >= 0;    // 好的那条还在
+  const ok2 = out.indexOf("共 1 卷") >= 0;                        // 坏的两条被剔掉
+  localStorage.removeItem("filmtap.v1.corrupt");
+  check("历史里的坏记录不炸页面", ok1 && ok2, "不抛异常=" + !threw + " 好记录还在=" + ok1 + " 坏记录剔掉=" + ok2);
+} catch (e) { check("历史里的坏记录不炸页面", false, "抛异常 " + e.message); }
+
+/* ── 分隔符嗅探：第一行经常是不可靠的 ──
+   真实表格第一行可能是个跨列大标题（只有 1 列）。只看首行的话，
+   制表符文件四种分隔符都切出 1 列，会退化成默认的逗号，整张表就废了。 */
+try {
+  const ok1 = sniffDelim("胶片库存\n型号\t数量\nPortra 400\t5") === "\t";
+  const ok2 = sniffDelim("型号,数量\nPortra 400,5") === ",";
+  const ok3 = sniffDelim("型号;数量\nPortra 400;5") === ";";
+  const ok4 = sniffDelim("单列\n只有这样") === ",";              // 都切不开 → 退化成逗号
+  check("分隔符嗅探不被标题行骗到", ok1 && ok2 && ok3 && ok4,
+        "标题行+制表符=" + ok1 + " 逗号=" + ok2 + " 分号=" + ok3 + " 退化=" + ok4);
+} catch (e) { check("分隔符嗅探不被标题行骗到", false, "抛异常 " + e.message); }
+
 /* ── 装卷扣库存 ── */
 try {
   save(demoData());
@@ -719,9 +914,141 @@ try {
           "关着也回灌=" + okA1 + " 关着不排队=" + okA2 + " 关着不上传=" + okA3 +
           " 开着排队=" + okA4 + " 开着上传=" + okA5);
 
+    /* ── 点「同步到 NAS」不该顺带动私有仓库 ──
+       早先 syncToNas() 先把 savedAt 写回本机再 save()，而 save() 在「自动同步」
+       开着时会排一次上传 —— 用户点的是 NAS 那个按钮，动到的却是 GitHub 那个仓库。
+
+       ⚠️ 不能靠 await flushGhPush() 来收尾：这个自检把 setTimeout 桩成了 () => 0，
+          于是 flushGhPush 里的「有没有排队」永远为假，测试会**假装通过**。
+          所以这里自己把窗口里排上的回调全抓下来跑掉 —— 真排了上传的话，
+          这一跑就会打到 api.github.com。
+          ⚠️ 不能只看「抓到回调没有」：toast() 自己也用 setTimeout，
+             抓到它纯属正常。判定必须落到「那个 PUT 去了哪个域名」。 */
+    saveDav({ url:"https://nas.example.com/dav/film/", user:"u", pass:"p" });
+    g = getGh(); g.auto = true; saveGh(g);
+    stubFetch(REMOTE);
+
+    const pending = [];
+    global.setTimeout = (fn) => { pending.push(fn); return 1; };
+    await syncToNas();
+    global.setTimeout = realSetTimeout;
+    for (const fn of pending){ try{ await fn(); }catch(e){} }
+
+    const wentNas = PUTS.some(p => p.url.indexOf("nas.example.com") >= 0);
+    const wentGh  = PUTS.filter(p => p.url.indexOf("api.github.com") >= 0).length;
+    const okN1 = wentNas && wentGh === 0;
+    const okN2 = load().savedAt == null;          // savedAt 也不该被写进本机
+    check("NAS 同步不触达私有仓库", okN1 && okN2,
+          "写到 NAS=" + wentNas + " 写仓库次数=" + wentGh + " 本机无 savedAt=" + okN2);
+
     clearGh();
     const okC = getGh() === null;
     check("仓库设置可清除", okC, "清掉=" + okC);
+
+    /* ── 「验证并登录」：把一枚令牌换成身份，数据仓库从列表里选 ──
+       这条路的存在意义就是「陌生人不用手打 owner / repo」。所以两个性质必须钉住：
+       ① 验证通过只说明「这枚令牌是谁的」，**没选仓库之前同步层不能认它** ——
+          否则会拿一份缺 owner/repo 的配置去拼 api.github.com 的地址；
+       ② 列不出仓库时必须能退回手填，不能把用户卡在这一屏。 */
+    clearGh();
+    ghRepos = null;
+
+    const PAT   = "fine-" + "grained-sample";
+    const ME    = { login:"octocat", name:"Mona Lisa",
+                    avatar_url:"https://avatars.example.com/u/1" };
+    const REPOS = [
+      { full_name:"octocat/film-tap-data", private:true  },
+      { full_name:"octocat/blog",          private:false },
+      { full_name:"octocat/film-tap-bak",  private:true  }
+    ];
+
+    const ghStub = reposOk => async (url, opt) => {
+      const u = String(url), h = (opt && opt.headers) || {};
+      if (h.Authorization !== "Bearer " + PAT) return { ok:false, status:401, json: async()=>({}) };
+      if (u.indexOf("/user/repos") >= 0) {
+        return reposOk ? { ok:true, status:200, json: async()=>REPOS }
+                       : { ok:false, status:403, json: async()=>({}) };
+      }
+      if (u.indexOf("/user") >= 0) return { ok:true, status:200, json: async()=>ME };
+      return { ok:false, status:404, json: async()=>({}) };
+    };
+
+    __setLoc("", "#/settings"); render();
+    global.fetch = ghStub(true);
+    __setValue("#gh-token", PAT);
+    await verifyGh();
+
+    const who  = getGhRaw();
+    const okL1 = !!who && who.login === "octocat" && who.avatar === ME.avatar_url;
+    const okL2 = getGh() === null;                 // 还没选仓库 → 同步层不认
+
+    render();
+    const uiL  = __app();
+    const okL3 = uiL.indexOf("gh-pick") >= 0 && uiL.indexOf("octocat/film-tap-data") >= 0;
+    /* 公开仓库不能列进来 —— 数据进公开仓库等于把机身和胶卷清单公开 */
+    const okL4 = uiL.indexOf("octocat/blog") < 0 && uiL.indexOf("octocat/film-tap-bak") >= 0;
+
+    __setValue("#gh-pick", "octocat/film-tap-data");
+    useGhRepo();
+    const gd   = getGh();
+    const okL5 = !!gd && gd.owner === "octocat" && gd.repo === "film-tap-data" &&
+                 gd.path === "data.json" && gd.branch === "main" && gd.login === "octocat";
+
+    /* fine-grained 令牌只勾了一个仓库时，GitHub 可能不给列 → 退回手填，不卡死 */
+    ghRepos = null;
+    global.fetch = ghStub(false);
+    await listGhRepos();
+    const okL6 = Array.isArray(ghRepos) && ghRepos.length === 0;
+
+    /* 手填那条路：令牌已经存着了，不该被要求再粘一次 */
+    __setLoc("", "#/settings"); render();
+    __setValue("#gh-owner",  "octocat");
+    __setValue("#gh-repo",   "film-tap-data-2");
+    __setValue("#gh-path",   "");
+    __setValue("#gh-branch", "");
+    __setValue("#gh-token",  "");
+    saveGhFromForm();
+    const g2   = getGh();
+    const okL7 = !!g2 && g2.repo === "film-tap-data-2" && g2.token === PAT &&
+                 g2.path === "data.json" && g2.login === "octocat";
+
+    check("登录拿身份 / 选仓库", okL1 && okL2 && okL3 && okL4 && okL5 && okL6 && okL7,
+          "身份=" + okL1 + " 未选仓库不认=" + okL2 + " 下拉出仓库=" + okL3 +
+          " 只列私有=" + okL4 + " 选中落配置=" + okL5 + " 列不出不炸=" + okL6 +
+          " 手填不重粘令牌=" + okL7);
+
+    /* ── 「本机空 + 仓库非空」这一次上传必须被拦下 ──
+       整库快照后写赢、没有合并，这一下就是**把仓库清空**。
+       真实路径：本机存储被系统清了（或换了台设备打开），用户随手记一台就冲掉仓库，
+       而且不报任何错。自检里这条也顺带守着「别为了拦它把正常上传一起拦掉」。
+
+       ⚠️ 断言要落在「有没有真的发出 PUT」上，不能只看返回值 ——
+          返回 false 但请求已经发出去，是另一种更隐蔽的坏法。 */
+    saveGh({ owner:"o", repo:"r", token:PAT, path:"data.json", branch:"main", auto:false });
+    clearLocal();
+    stubFetch(REMOTE);
+    const putBefore  = PUTS.length;
+    const okE1 = (await ghPush(false)) === false;
+    const okE2 = PUTS.length === putBefore;          // 一个字节都没发出去
+
+    /* 这道闸必须够窄：本机有数据时照旧能传上去 */
+    save({ version:2, films:{},
+           cameras:{ a:{ id:"a", name:"甲", format:"135", loaded:null, history:[] } } });
+    stubFetch(REMOTE);
+    const okE3 = (await ghPush(true)) === true;
+    const okE4 = PUTS.length === 1;
+
+    /* 但「清空全部数据 → 连仓库一起清」必须放行 —— 那条路本来就是先清本机
+       再推一份空的上去，正好命中「本机空、仓库非空」。
+       不放行的话那个功能会**静默失效**：用户点了两次确定，仓库里却还留着。 */
+    clearLocal();
+    stubFetch(REMOTE);
+    const okE5 = (await ghPush(false, true)) === true;
+    const okE6 = PUTS.length === 1;
+
+    check("空库不会清空仓库", okE1 && okE2 && okE3 && okE4 && okE5 && okE6,
+          "被拦=" + okE1 + " 没发请求=" + okE2 + " 有数据照传=" + okE3 + " 只发一次=" + okE4 +
+          " 明确清空放行=" + okE5 + " force 只发一次=" + okE6);
   } catch (e) {
     check("私有仓库同步", false, "抛异常 " + e.message);
   }

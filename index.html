@@ -119,7 +119,16 @@ input,textarea,select{
   -webkit-appearance:none;appearance:none;
 }
 textarea{resize:vertical;min-height:76px}
-input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+/* <select> 被上面那条 appearance:none 一起抹掉了原生箭头，于是它和普通输入框
+   长得一模一样 —— 用户根本看不出这里能点。补一个自绘箭头。
+   箭头颜色写死一个中间灰（#9c9081）：明暗两套主题下都看得清，
+   data URI 里也用不了 CSS 变量。 */
+select{
+  background-image:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' fill='none' stroke='%239c9081' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 15px center;
+  padding-right:42px;cursor:pointer;
+}
+input:focus,textarea:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .chips{display:flex;gap:7px;overflow-x:auto;padding:2px 0 6px;margin:0 -18px;padding-left:18px;padding-right:18px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
 .chip{
@@ -171,6 +180,12 @@ input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
 const KEY     = "filmtap.v1";
 const KEY_OLD = "filmnfc.v1";   // 改名前用的键，只读一次把老数据接过来
 
+/* 读不出来的原始文本在这儿留一份。为什么需要这个键：
+   load() 解析失败只能返回空库，而界面上那和「真的没数据」长得一模一样；
+   用户接着随手记一台机身，save() 就把坏掉的那份永久覆盖了。
+   留一份原文，等于把「静默丢失」降级成「还能捞回来」。 */
+const CORRUPT_KEY = "filmtap.v1.corrupt";
+
 /* 画幅 → 默认张数，装卷时用来预填「总张数」。
    放在这里而不是挂在每个胶卷型号上，因为同一款卷在 135 和 120 上张数完全不同。 */
 const FORMATS = ["135","120","110","大画幅","其他"];
@@ -184,12 +199,11 @@ function blank(){ return { version:2, cameras:{}, films:{} }; }
 
    为什么用「型号 + 画幅」当键：同一款 Portra 400，135 和 120 是两件不同的东西 ——
    价格不同、能拍的张数不同、能塞进哪台机身也不同，混在一起算存量没有意义。
-   键做成确定的（filmId@画幅）而不是随机 id，于是**重复导入同一款会合并成一条**，
+   键做成确定的（型号@画幅）而不是随机 id，于是**重复导入同一款会合并成一条**，
    而不是每导一次就多出一条。 */
-/* 键不能直接用 filmId()：那个函数会把非 [a-z0-9] 的字符全部丢掉，
-   于是纯中文型号会退化成空串再兜底成 "roll" ——
-   「富士 100」和「柯达 100」都会变成 "100"，两条不同的库存悄悄并成一条。
-   所以这里只做「小写 + 空白折叠」，中文字符原样保留。 */
+/* 键不能做成「把非 [a-z0-9] 的字符全丢掉再拼」那种 ——
+   那样纯中文型号会退化成空串，「富士 100」和「柯达 100」都会变成 "100"，
+   两条不同的库存悄悄并成一条。所以这里只做「小写 + 空白折叠」，中文原样保留。 */
 function filmKey(stock, format){
   const base = String(stock || "").trim().toLowerCase()
                .replace(/\s+/g, "-").replace(/^-+|-+$/g, "");
@@ -211,15 +225,39 @@ function normalizeFilm(f){
 
 /* 补齐缺失字段，让 v1 的老数据直接可用，不必写一次性迁移 */
 function normalizeRoll(r, camFormat){
-  if (!r) return null;
+  if (!r || typeof r !== "object") return null;
   r.stock  = r.stock || "";
   r.iso    = Number(r.iso) || null;
   r.ei     = Number(r.ei)  || null;
   r.shots  = Number(r.shots) || 0;
   r.total  = Number(r.total) || (DEFAULT_FRAMES[camFormat] || 0);
   r.note   = r.note || "";
-  r.filmId = r.filmId || filmId(r.stock);
   return r;
+}
+
+/* 一台机身整个不像机身（比如被写成了字符串），就把它剔掉，
+   而不是让 normalize 抛异常 —— 抛出去会被 load() 的 catch 接住，
+   结果是一台坏机器身把**整个库**变成空的。
+   剔掉几台记在 normalize.dropped 上，load() 据此决定要不要留一份原文。 */
+function normalizeCameras(d){
+  let dropped = 0;
+  for (const k of Object.keys(d.cameras)){
+    const c = d.cameras[k];
+    if (!c || typeof c !== "object" || Array.isArray(c)){ delete d.cameras[k]; dropped++; continue; }
+    c.id     = c.id || newCamId();
+    c.name   = c.name || "未命名机身";
+    c.note   = c.note || "";
+    c.brand  = c.brand || "";
+    c.model  = c.model || "";
+    c.format = FORMATS.indexOf(c.format) >= 0 ? c.format : "135";
+    /* 历史里的坏记录直接丢掉：留着 null 的话，历史页会在 r.stock 上抛异常，
+       整页变空白 —— 而用户根本不知道那一卷发生了什么。 */
+    const hist = Array.isArray(c.history) ? c.history : [];
+    c.history = hist.map(r => normalizeRoll(r, c.format)).filter(Boolean);
+    if (c.history.length !== hist.length) dropped += hist.length - c.history.length;
+    c.loaded = normalizeRoll(c.loaded, c.format);
+  }
+  normalize.dropped = dropped;
 }
 
 function normalize(d){
@@ -231,40 +269,52 @@ function normalize(d){
     if (!f) delete d.films[k];
     else { f.id = k; d.films[k] = f; }
   }
-  for (const c of Object.values(d.cameras)){
-    c.id     = c.id || newCamId();
-    c.name   = c.name || "未命名机身";
-    c.note   = c.note || "";
-    c.brand  = c.brand || "";
-    c.model  = c.model || "";
-    c.format = FORMATS.indexOf(c.format) >= 0 ? c.format : "135";
-    c.history = Array.isArray(c.history) ? c.history : [];
-    c.loaded = normalizeRoll(c.loaded, c.format);
-    for (let i = 0; i < c.history.length; i++) c.history[i] = normalizeRoll(c.history[i], c.format);
-  }
+  normalizeCameras(d);
   return d;
+}
+normalize.dropped = 0;
+
+/* 把读不出来的原文留一份。只在还没留过的时候写 ——
+   第一份通常最完整，后面的多半是残缺的，别用后来的盖掉它。 */
+function keepCorrupt(raw){
+  if (!raw) return;
+  try{ if (!localStorage.getItem(CORRUPT_KEY)) localStorage.setItem(CORRUPT_KEY, raw); }catch(e){}
+}
+
+function corruptRaw(){
+  try{ return localStorage.getItem(CORRUPT_KEY) || ""; }catch(e){ return ""; }
 }
 
 function load(){
+  let raw = null, fromLegacy = false;
   try{
-    let raw = localStorage.getItem(KEY);
+    raw = localStorage.getItem(KEY);
     if (!raw){
       /* 项目从 film-nfc 改名成 film-tap，存储键跟着换。
          老键里有数据就接过来写进新键（先解析确认能用才搬），
          免得改个名字把用户已有的机身全弄丢。 */
       const legacy = localStorage.getItem(KEY_OLD);
-      if (legacy){
-        const probe = JSON.parse(legacy);
-        if (probe && typeof probe === "object" && probe.cameras){
-          localStorage.setItem(KEY, legacy);
-          raw = legacy;
-        }
-      }
+      if (legacy){ raw = legacy; fromLegacy = true; }
     }
+    if (!raw) return blank();
+
     const d = JSON.parse(raw);
-    if (!d || typeof d !== "object" || !d.cameras) return blank();
-    return normalize(d);
-  }catch(e){ return blank(); }
+    if (!d || typeof d !== "object" || !d.cameras || typeof d.cameras !== "object")
+      throw new Error("结构不对");
+
+    /* 老键确认可用之后才搬（放这儿是为了让 setItem 只发生在解析成功之后），
+       而且**不删老键** —— 幂等，重复打开也不会出事，改回来也还有退路。 */
+    if (fromLegacy){ try{ localStorage.setItem(KEY, raw); }catch(e){} }
+
+    const out = normalize(d);
+    /* 剔掉过东西也留一份原文：被剔掉的那部分虽然认不出来，但也是用户写的，
+       不该在我们这儿无声消失。 */
+    if (normalize.dropped) keepCorrupt(raw);
+    return out;
+  }catch(e){
+    keepCorrupt(raw);
+    return blank();
+  }
 }
 /* 启动过程中也会调 save()（灌示例数据），那不是用户改的数据，不该触发上传。
    所以用一个开关隔开：脚本跑完、初次 render 之后才允许自动同步。 */
@@ -283,6 +333,38 @@ const $ = s => document.querySelector(s);
 function esc(s){
   return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+/* 把一段文本安全地放进「HTML 属性里的 JS 字符串」。
+   机身 ID 有三个入口：URL 上的 ?c=、导入的 JSON、私有仓库里的远端数据 ——
+   后两个都不过 parseRoute，所以不能只在那一道口子上过滤。
+
+   这里不能用 esc()：它把 ' 换成 &#39;，HTML 解析器读属性时又把它还原成 '，
+   字符串照样在 JS 里被闭掉。所以要按 JS 单引号字符串的规矩转义：
+   \ 和 ' 是为 JS 转的，" & < > 是为不让它提前闭掉属性。
+   ⚠️ encodeURIComponent 也挡不住 —— 它不编码 ! ' ( ) * 。
+   换行/行分隔符要在最后去掉：单引号字符串里出现真换行是语法错误。 */
+function jsq(s){
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/\\/g, "\\\\").replace(/'/g, "\\'")
+    .replace(/[\r\n\u2028\u2029]/g, "");
+}
+
+/* 跳转按钮统一走这个：路径进 onclick 之前必须先过 jsq */
+function goAttr(path){
+  return 'onclick="go(\'' + jsq(path) + '\')"';
+}
+
+/* 可点击的整行（.item.cam）。它本来就是给手指点的整块区域，
+   加 role/tabindex 是为了键盘也能用 —— 顺手把 Enter/Space 接上，
+   见文件末尾的 keydown 委托。 */
+const TAPPABLE = ' role="button" tabindex="0"';
+
+/* 整行跳转用这个；普通 <button> 自带键盘可达性，直接用 goAttr 就够 */
+function tapRow(path){
+  return TAPPABLE + ' ' + goAttr(path);
 }
 
 function toast(msg){
@@ -347,10 +429,6 @@ function filmBar(shot, total){
        + '</div>';
 }
 
-function filmId(name){
-  return (name || "").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") || "roll";
-}
-
 function newCamId(){
   return "cam-" + Math.random().toString(36).slice(2,7);
 }
@@ -399,40 +477,39 @@ function demoData(){
         id: "m6", name: "Leica M6", note: "黑色 0.72 取景器", createdAt: now,
         brand: "Leica", model: "M6", format: "135",
         loaded: { stock:"Kodak Portra 400", iso:400, ei:1600, loadedAt:daysAgo(92),
-                  shots:24, total:36, note:"推到 1600 拍夜景，冲扫时记得加 2 档",
-                  filmId:"kodak-portra-400" },
+                  shots:24, total:36, note:"推到 1600 拍夜景，冲扫时记得加 2 档" },
         history: [
           { stock:"Ilford HP5 Plus 400", iso:400, ei:400, loadedAt:daysAgo(260),
-            unloadedAt:daysAgo(238), shots:36, total:36, note:"", filmId:"ilford-hp5-plus-400" },
+            unloadedAt:daysAgo(238), shots:36, total:36, note:"" },
           { stock:"Fujifilm C200", iso:200, ei:200, loadedAt:daysAgo(420),
-            unloadedAt:daysAgo(300), shots:36, total:36, note:"", filmId:"fujifilm-c200" }
+            unloadedAt:daysAgo(300), shots:36, total:36, note:"" }
         ]
       },
       fm2: {
         id: "fm2", name: "尼康 FM2", note: "银色，挂 50/1.4", createdAt: now,
         brand: "Nikon", model: "FM2", format: "135",
         loaded: { stock:"Ilford HP5 Plus 400", iso:400, ei:400, loadedAt:daysAgo(12),
-                  shots:8, total:36, note:"", filmId:"ilford-hp5-plus-400" },
+                  shots:8, total:36, note:"" },
         history: [
           { stock:"Kodak Tri-X 400", iso:400, ei:400, loadedAt:daysAgo(120),
-            unloadedAt:daysAgo(15), shots:36, total:36, note:"", filmId:"kodak-tri-x-400" }
+            unloadedAt:daysAgo(15), shots:36, total:36, note:"" }
         ]
       },
       xa2: {
         id: "xa2", name: "奥林巴斯 XA2", note: "", createdAt: now,
         brand: "Olympus", model: "XA2", format: "135",
         loaded: { stock:"Kodak ColorPlus 200", iso:200, ei:200, loadedAt:daysAgo(214),
-                  shots:31, total:36, note:"口袋里还有 5 张没拍完", filmId:"kodak-colorplus-200" },
+                  shots:31, total:36, note:"口袋里还有 5 张没拍完" },
         history: []
       },
       rollei: {
         id: "rollei", name: "禄来 3.5F", note: "6x6，腰平取景", createdAt: now,
         brand: "Rollei", model: "3.5F", format: "120",
         loaded: { stock:"Ilford Delta 100", iso:100, ei:100, loadedAt:daysAgo(40),
-                  shots:5, total:12, note:"12 张一卷，省着拍", filmId:"ilford-delta-100" },
+                  shots:5, total:12, note:"12 张一卷，省着拍" },
         history: [
           { stock:"Kodak Portra 160", iso:160, ei:160, loadedAt:daysAgo(150),
-            unloadedAt:daysAgo(96), shots:12, total:12, note:"", filmId:"kodak-portra-160" }
+            unloadedAt:daysAgo(96), shots:12, total:12, note:"" }
         ]
       }
     },
@@ -538,12 +615,24 @@ function filmTotals(db){
    解析器只做「够用」的那部分约定：带引号的字段、字段里的分隔符、"" 转义的双引号、
    CRLF、以及 Excel 导出时爱加的 BOM。不求 RFC 4180 的全部分支，
    但必须吃得住真实表格 —— 尤其型号里带逗号的写法（"Kodak Portra 400, 5卷装"）。 */
+/* 分隔符嗅探：拿前几行分别试四种分隔符，谁「切出的列最多而且每行都一样多」谁赢。
+   只看首行是不够的 —— 真实表格第一行经常是不可靠的：可能是跨列的大标题
+   （那行只有 1 列，纯逗号文件也会被误判），也可能某个表头里自带逗号。
+   打分用「最大列数 × 100 + 达到这个列数的行数」，于是：
+     · 只切出 1 列的分隔符直接出局（说明它根本不是这个文件的分隔符）；
+     · 同分时先试的先赢，逗号优先。 */
 function sniffDelim(text){
-  const firstLine = String(text).replace(/^\uFEFF/, "").split(/\r?\n/).find(l => l.trim()) || "";
-  let best = ",", bestN = -1;
+  const lines = String(text).replace(/^\uFEFF/, "").split(/\r?\n/)
+                        .filter(l => l.trim()).slice(0, 5);
+  if (!lines.length) return ",";
+
+  let best = ",", bestScore = -1;
   for (const d of [",", "\t", ";", "|"]){
-    const n = parseDelimited(firstLine, d)[0].length;
-    if (n > bestN){ bestN = n; best = d; }
+    const counts = lines.map(l => parseDelimited(l, d)[0].length);
+    const mx = Math.max.apply(null, counts);
+    if (mx < 2) continue;                       // 切不开，不是它
+    const score = mx * 100 + counts.filter(n => n === mx).length;
+    if (score > bestScore){ bestScore = score; best = d; }
   }
   return best;
 }
@@ -724,7 +813,7 @@ function setFilmFormat(el, fmt){
 /* ══════════════ 视图 ══════════════ */
 
 function navBack(label, path){
-  return '<div class="nav"><button class="back" onclick="go(\'' + path + '\')">‹ ' + esc(label) + '</button></div>';
+  return '<div class="nav"><button class="back" ' + goAttr(path) + '>‹ ' + esc(label) + '</button></div>';
 }
 
 function renderHome(db){
@@ -734,6 +823,7 @@ function renderHome(db){
   h += '<p class="sub">' + (cams.length ? "共 " + cams.length + " 台机身登记在册" : "还没有登记任何机身") + '</p>';
 
   if (db.demo) h += '<div class="banner i">这是示例数据，方便你先看看成品长什么样。去「设置与备份」里清空，就能开始录自己的机身。</div>';
+  h += corruptBanner();
 
   if (!cams.length){
     h += '<div class="empty"><div class="big">▢</div>'
@@ -749,7 +839,7 @@ function renderHome(db){
         ? '<div class="bar" style="margin-top:7px"><i style="width:' +
           Math.min(100, Math.round((r.shots || 0) / r.total * 100)) + '%"></i></div>'
         : '';
-      h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(c.id) + '\')">'
+      h += '<div class="item cam"' + tapRow('#/c/' + encodeURIComponent(c.id)) + '>'
          +   '<div class="body">'
          +     '<div class="name">' + esc(c.name || "未命名机身") + '</div>'
          +     '<div class="roll">' + esc(stockTxt)
@@ -812,8 +902,8 @@ function renderCam(db, id){
     h += '<div class="card" style="text-align:center;padding:34px 20px">'
        +   '<div style="font-size:15px;color:var(--ink-2);margin-bottom:18px">这台机身当前是空的</div>'
        + '</div>';
-    h += '<button class="btn primary" onclick="go(\'#/c/' + encodeURIComponent(id) + '/load\')">装一卷</button>';
-    h += '<button class="btn ghost" onclick="go(\'#/c/' + encodeURIComponent(id) + '/setup\')">编辑机身信息</button>';
+    h += '<button class="btn primary" ' + goAttr('#/c/' + encodeURIComponent(id) + '/load') + '>装一卷</button>';
+    h += '<button class="btn ghost" ' + goAttr('#/c/' + encodeURIComponent(id) + '/setup') + '>编辑机身信息</button>';
   } else {
     if (at) h += '<div class="banner w">这卷已经装了 ' + d + " 天——" + esc(at.text) + '。</div>';
 
@@ -842,25 +932,25 @@ function renderCam(db, id){
 
     const full = r.total && r.shots >= r.total;
     h += '<button class="btn primary"' + (full ? ' disabled style="opacity:.4"' : '')
-       +   ' onclick="advanceShot(\'' + id + '\')">' + (full ? "这卷已经拍满" : "过片 ＋1") + '</button>';
+       +   ' onclick="advanceShot(\'' + jsq(id) + '\')">' + (full ? "这卷已经拍满" : "过片 ＋1") + '</button>';
     h += '<div class="row">'
-       +   '<button class="btn" onclick="go(\'#/c/' + encodeURIComponent(id) + '/load\')">换一卷</button>'
-       +   '<button class="btn" onclick="go(\'#/c/' + encodeURIComponent(id) + '/edit\')">编辑这卷</button>'
+       +   '<button class="btn" ' + goAttr('#/c/' + encodeURIComponent(id) + '/load') + '>换一卷</button>'
+       +   '<button class="btn" ' + goAttr('#/c/' + encodeURIComponent(id) + '/edit') + '>编辑这卷</button>'
        + '</div>';
-    h += '<button class="btn ghost" onclick="copySlip(\'' + id + '\')">复制冲扫备注</button>';
+    h += '<button class="btn ghost" onclick="copySlip(\'' + jsq(id) + '\')">复制冲扫备注</button>';
   }
 
   h += '<h2>机身</h2><div class="list">';
   const camLine = [c.format, [c.brand, c.model].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
-  h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(id) + '/setup\')">'
+  h += '<div class="item cam"' + tapRow('#/c/' + encodeURIComponent(id) + '/setup') + '>'
      +   '<div class="body"><div class="name">编辑机身信息</div>'
      +   '<div class="roll">' + esc(camLine || "填写品牌、型号、画幅") + '</div></div>'
      +   '<div class="chev">›</div></div>';
-  h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(id) + '/history\')">'
+  h += '<div class="item cam"' + tapRow('#/c/' + encodeURIComponent(id) + '/history') + '>'
      +   '<div class="body"><div class="name">拍过的卷</div>'
      +   '<div class="roll">共 ' + (c.history ? c.history.length : 0) + ' 卷</div></div>'
      +   '<div class="chev">›</div></div>';
-  h += '<div class="item cam" onclick="go(\'#/settings\')">'
+  h += '<div class="item cam"' + tapRow('#/settings') + '>'
      +   '<div class="body"><div class="name">标签 URL</div>'
      +   '<div class="roll mono">' + esc(tagUrl(id)) + '</div></div>'
      +   '<div class="chev">›</div></div>';
@@ -898,7 +988,7 @@ function renderSetup(db, id, isKnown){
   h += '<label>机身备注（可选）</label>'
      + '<input id="f-cnote" placeholder="例如 黑色 0.72 取景器" autocomplete="off" value="' + esc(exists ? c.note : "") + '">';
   h += '<div style="height:22px"></div>';
-  h += '<button class="btn primary" onclick="saveSetup(\'' + id + '\')">保存</button>';
+  h += '<button class="btn primary" onclick="saveSetup(\'' + jsq(id) + '\')">保存</button>';
   h += '<div class="hint">挂件 ID：<span class="mono">' + esc(id) + '</span>，这是标签里的唯一标识，写卡时用得到。</div>';
   return h;
 }
@@ -921,7 +1011,7 @@ function renderLoad(db, id, isEdit){
   h += '<div class="chips" id="filmchips">';
   for (const f of FILMS){
     const on = f.name === r.stock ? " on" : "";
-    h += '<button class="chip' + on + '" onclick="pickFilm(this,\'' + f.name.replace(/'/g,"\\'") + '\',' + f.iso + ')">'
+    h += '<button class="chip' + on + '" onclick="pickFilm(this,\'' + jsq(f.name) + '\',' + Number(f.iso) + ')">'
        + esc(f.name) + '</button>';
   }
   h += '</div>';
@@ -951,10 +1041,10 @@ function renderLoad(db, id, isEdit){
      + '<textarea id="f-note" placeholder="例如 推到 1600 拍夜景，冲扫时加 2 档">' + esc(r.note || "") + '</textarea>';
 
   h += '<div style="height:22px"></div>';
-  h += '<button class="btn primary" onclick="saveLoad(\'' + id + '\',' + (isEdit ? "true" : "false") + ')">'
+  h += '<button class="btn primary" onclick="saveLoad(\'' + jsq(id) + '\',' + (isEdit ? "true" : "false") + ')">'
      + (isEdit ? "保存" : "确认装卷") + '</button>';
   if (isEdit && !r.stock){
-    h += '<button class="btn danger" onclick="clearFilm(\'' + id + '\')">标记为空机</button>';
+    h += '<button class="btn danger" onclick="clearFilm(\'' + jsq(id) + '\')">标记为空机</button>';
   }
   return h;
 }
@@ -1052,7 +1142,7 @@ function renderStats(db){
     const r = c.loaded;
     const d = r && r.loadedAt ? daysSince(r.loadedAt) : null;
     const pct = r && r.total ? Math.min(100, Math.round((r.shots || 0) / r.total * 100)) : null;
-    h += '<div class="item cam" onclick="go(\'#/c/' + encodeURIComponent(c.id) + '\')">'
+    h += '<div class="item cam"' + tapRow('#/c/' + encodeURIComponent(c.id)) + '>'
        +   '<div class="body">'
        +     '<div class="name">' + esc(c.name || "未命名机身") + '</div>'
        +     '<div class="roll">' + (r
@@ -1103,7 +1193,7 @@ function renderFilms(db){
        手机窄一点就会把「购于 …」尾巴上的日期吃掉 —— 库存列表里的每个字段
        都是要看的，宁可折成两行也不能藏起来。价格挪到右侧那一列，
        它本来就和卷数是一组数字，也顺带把折行概率压到最低。 */
-    h += '<div class="item cam" onclick="go(\'#/films/edit/' + encodeURIComponent(f.id) + '\')">'
+    h += '<div class="item cam"' + tapRow('#/films/edit/' + encodeURIComponent(f.id)) + '>'
        +   '<div class="body">'
        +     '<div class="name">' + esc(f.stock) + '</div>'
        +     '<div class="roll" style="white-space:normal">' + esc(bits.join(" · ")) + '</div>'
@@ -1147,7 +1237,7 @@ function renderFilmForm(db, key){
   h += '<label>画幅</label><div class="chips" id="ffchips">';
   for (const fmt of FORMATS){
     h += '<button class="chip' + (fmt === f.format ? " on" : "") + '"'
-       +   ' onclick="setFilmFormat(this,\'' + esc(fmt) + '\')">' + esc(fmt) + '</button>';
+       +   ' onclick="setFilmFormat(this,\'' + jsq(fmt) + '\')">' + esc(fmt) + '</button>';
   }
   h += '</div>';
   h += '<div class="hint">同一款胶卷在 135 和 120 上是两条库存 —— 价格、张数都不一样，分开算才不会混。</div>';
@@ -1375,10 +1465,40 @@ function runImport(){
   go("#/films");
 }
 
+/* 手动填仓库。它是「列不出仓库」时的退路，不是主路径 ——
+   但绝不能去掉：fine-grained 令牌只勾一个仓库时，GitHub 可能不给列。
+
+   withToken 决定要不要渲染令牌框。**同一个页面里 #gh-token 只能有一个** ——
+   querySelector 只认第一个，多渲染一个就会出现「明明填了却读不到」的鬼故事。
+   没登录时令牌框在卡片里当主入口，登录之后才挪进这块。 */
+function ghManualForm(c, withToken){
+  let h = '';
+  h += '<label>仓库所有者</label>'
+     + '<input id="gh-owner" placeholder="例如 Escaper929" autocomplete="off" spellcheck="false" value="'
+     + esc(c && c.owner ? c.owner : "") + '">';
+  h += '<label>仓库名</label>'
+     + '<input id="gh-repo" placeholder="例如 film-tap-data" autocomplete="off" spellcheck="false" value="'
+     + esc(c && c.repo ? c.repo : "") + '">';
+  h += '<label>文件路径</label>'
+     + '<input id="gh-path" autocomplete="off" spellcheck="false" placeholder="' + GH_DEFAULT_PATH
+     + '" value="' + esc(c && c.path ? c.path : "") + '">';
+  h += '<label>分支</label>'
+     + '<input id="gh-branch" placeholder="main" autocomplete="off" spellcheck="false" value="'
+     + esc(c && c.branch ? c.branch : "") + '">';
+  if (withToken){
+    h += '<label>访问令牌</label>'
+       + '<input id="gh-token" type="password" autocomplete="new-password" placeholder="'
+       +   (c && c.token ? "已保存，留空就不改" : "粘贴 fine-grained token") + '">';
+  }
+  return h;
+}
+
 function renderSettings(db){
   const n = Object.keys(db.cameras).length;
   let h = navBack("机库", "#/");
   h += '<h1>设置</h1>';
+
+  h += corruptBanner();
 
   h += '<h2>备份</h2>'
      + '<button class="btn" onclick="exportJSON()">导出备份（JSON）</button>'
@@ -1410,41 +1530,103 @@ function renderSettings(db){
     h += '<button class="btn ghost" onclick="clearDavSettings()">清除同步凭据</button>';
   }
 
-  const gh = getGh();
+  /* gh  = 登录态（有令牌就算）；ghd = 数据仓库配全了没有（同步层只认这个） */
+  const gh  = getGhRaw();
+  const ghd = getGh();
   h += '<h2>同步到私有仓库（可选）</h2>';
   h += '<div class="card" style="padding:16px 18px">';
   h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
      + '把数据存进一个<b>私有</b> GitHub 仓库。代码仓库是公开的，数据得单独放一处 —— '
      + '提交进公开仓库的数据会永久留在 Git 历史里。放这儿的好处是数据不公开、自带版本历史，'
      + '而且本机被系统清理或换了手机之后，一打开就自动拉回来。</div>';
-  h += '<label>仓库所有者</label>'
-     + '<input id="gh-owner" placeholder="例如 Escaper929" autocomplete="off" spellcheck="false" value="' + esc(gh ? gh.owner : "") + '">';
-  h += '<label>仓库名</label>'
-     + '<input id="gh-repo" placeholder="例如 film-tap-data" autocomplete="off" spellcheck="false" value="' + esc(gh ? gh.repo : "") + '">';
-  h += '<label>文件路径</label>'
-     + '<input id="gh-path" autocomplete="off" spellcheck="false" placeholder="' + GH_DEFAULT_PATH + '" value="' + esc(gh ? gh.path : "") + '">';
-  h += '<label>分支</label>'
-     + '<input id="gh-branch" placeholder="main" autocomplete="off" spellcheck="false" value="' + esc(gh ? gh.branch : "") + '">';
-  h += '<label>访问令牌</label>'
-     + '<input id="gh-token" type="password" autocomplete="new-password" placeholder="'
-     +   (gh ? "已保存，留空就不改" : "粘贴 fine-grained token") + '">';
-  h += '<div class="hint">令牌只保存在这台设备上，<b>不会写进代码、也不会随网页发布出去</b>。'
-     + '去 GitHub 建一枚 <b>Fine-grained token</b>：只勾选这一个私有仓库，'
-     + '权限只给 <b>Contents: Read and write</b>，并设一个过期日期。'
-     + '手机丢了就回 GitHub 把那枚令牌撤销掉。</div>';
   h += '</div>';
-  h += '<button class="btn' + (gh ? "" : " primary") + '" onclick="saveGhFromForm()">保存仓库设置</button>';
-  if (gh){
+
+  if (!gh){
+    h += '<div class="card" style="padding:16px 18px">';
+    h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.9">'
+       + '① <a href="https://github.com/new?name=film-tap-data&amp;visibility=private" target="_blank" rel="noopener">建一个私有仓库</a>'
+       + '，名字随意，里面什么都不用放<br>'
+       + '② <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">建一枚 fine-grained 令牌</a>：'
+       + '<b>Repository access</b> 只勾①那个仓库，<b>Permissions</b> 里把 <b>Contents</b> 设成 '
+       + '<b>Read and write</b>，其余全部留 No access，再设一个过期日期<br>'
+       + '③ 把令牌粘到下面，点「验证并登录」—— 之后仓库不用手打，从列表里选就行</div>';
+    h += '<div class="hint" style="margin-top:12px">'
+       + '本机现在是空的、但以前配过这个仓库？把令牌再粘一次就能把数据拉回来 —— '
+       + '浏览器清理存储时，令牌和仓库地址是<b>一起</b>被清掉的，所以它不会自己接上。</div>';
+    h += '</div>';
+    h += '<label>访问令牌</label>'
+       + '<input id="gh-token" type="password" autocomplete="new-password" placeholder="粘贴 fine-grained token">';
+    h += '<div class="hint">令牌只保存在这台设备上，<b>不会写进代码、也不会随网页发布出去</b>。'
+       + '手机丢了就回 GitHub 把那枚令牌撤销掉。</div>';
+    h += '<button class="btn primary" onclick="verifyGh()">验证并登录</button>';
+  } else {
+    h += '<div class="card" style="padding:14px 16px;display:flex;align-items:center;gap:12px">';
+    if (gh.avatar){
+      h += '<img src="' + esc(gh.avatar) + '" alt="" width="38" height="38" '
+         + 'style="border-radius:50%;flex:none;display:block">';
+    }
+    h += '<div style="min-width:0">'
+       + '<div style="font-size:15px;font-weight:500;overflow:hidden;text-overflow:ellipsis">'
+       +   esc(gh.login ? "@" + gh.login : "已连上 GitHub") + '</div>'
+       + '<div style="font-size:12.5px;color:var(--ink-3);margin-top:3px;word-break:break-all">'
+       +   (ghd ? esc(ghd.owner + "/" + ghd.repo) : "还没选数据仓库") + '</div>'
+       + '</div>';
+    h += '</div>';
+
+    /* 老配置要有个明显的升级入口：手填过 owner/repo/token、但从没验证过身份的那种，
+       否则会一直停在「已连上 GitHub、没有头像」这一屏 ——
+       而「验证并登录」只长在未登录那套排版里，用户根本找不到它在哪。 */
+    if (!gh.login){
+      h += '<div class="hint" style="margin-top:10px">这枚令牌还没验证过身份 —— '
+         + '验证一下就会显示账号，而且仓库能从列表里选，不用手打。</div>';
+      h += '<button class="btn" onclick="verifyGh()">验证这枚令牌</button>';
+    }
+
+    if (ghRepos === null){
+      h += '<button class="btn" onclick="listGhRepos()">列出我的私有仓库</button>';
+      h += '<div class="hint">列不出来也不影响使用 —— 令牌只勾了一个仓库时 GitHub 可能不给列，'
+         + '下面「手动填仓库」一样能连上。</div>';
+    } else if (ghRepos.length){
+      h += '<label>选一个数据仓库</label><select id="gh-pick">';
+      for (const r of ghRepos){
+        const fn = String(r.full_name);
+        h += '<option value="' + esc(fn) + '"'
+           + ((ghd && ghd.owner + "/" + ghd.repo === fn) ? " selected" : "") + '>'
+           + esc(fn) + '</option>';
+      }
+      h += '</select>';
+      h += '<button class="btn primary" onclick="useGhRepo()">用这个仓库</button>';
+    } else {
+      h += '<div class="hint">这枚令牌看不到任何<b>私有</b>仓库。数据仓库必须是私有的 —— '
+         + '手动建一个再回来列一次；如果仓库本来就是私有的，'
+         + '多半是建令牌时没把它勾进 <b>Repository access</b>。</div>';
+      h += '<button class="btn" onclick="listGhRepos()">重新列出我的私有仓库</button>';
+    }
+  }
+
+  if (ghd){
     h += '<div class="row">'
        +   '<button class="btn" onclick="ghPush(false)">立即上传</button>'
        +   '<button class="btn" onclick="ghPull()">从仓库拉取</button>'
        + '</div>';
-    h += '<button class="btn' + (gh.auto ? " primary" : "") + '" onclick="toggleGhAuto()">自动同步：'
-       +   (gh.auto ? "已开启" : "已关闭") + '</button>';
+    h += '<button class="btn' + (ghd.auto ? " primary" : "") + '" onclick="toggleGhAuto()">自动同步：'
+       +   (ghd.auto ? "已开启" : "已关闭") + '</button>';
     h += '<div class="hint">关掉之后只有点「立即上传」才会写仓库。'
        + '「本机为空时自动拉回」不受这个开关影响 —— 那是防数据丢失的底线。</div>';
-    h += '<button class="btn ghost" onclick="clearGhSettings()">清除仓库设置</button>';
   }
+
+  /* 手动区放最后：它是退路，不是主路径。夹在「选仓库」和「立即上传」中间
+     会把一条顺畅的流程切两半。 */
+  h += '<details style="margin-top:14px">'
+     + '<summary style="font-size:13px;color:var(--accent);cursor:pointer;padding:4px 0">'
+     + (gh ? '手动填仓库 / 换一枚令牌' : '不想登录 GitHub，直接手填仓库')
+     + '</summary>';
+  h += ghManualForm(gh, !!gh);
+  h += '<button class="btn" onclick="saveGhFromForm()">保存仓库设置</button>';
+  if (gh) h += '<button class="btn ghost" onclick="verifyGh()">用这枚令牌重新验证</button>';
+  h += '</details>';
+
+  if (gh) h += '<button class="btn ghost" onclick="clearGhSettings()">退出登录并清除本机令牌</button>';
 
   h += '<h2>给 NFC 标签写什么</h2>';
   h += '<div class="card" style="padding:16px 18px">';
@@ -1474,6 +1656,43 @@ function renderSettings(db){
 
   h += '<div class="foot">film-tap · 数据全程留在本机<br>碰一下标签 › 编辑这卷 › 自动记天数和历史</div>';
   return h;
+}
+
+/* 读不出来时露一条横幅。文案的重点是「没丢」——
+   不说清楚的话，用户看到空机库会当成数据没了，然后凭记忆重录一遍，
+   反而把真正能救回来的那份盖掉。 */
+function corruptBanner(){
+  if (!corruptRaw()) return "";
+  return '<div class="banner w"><b>上次存进去的数据没能读出来。</b><br>'
+       + '原始内容已经单独留了一份，<b>没有丢</b>，只是认不成机身和库存，'
+       + '所以下面看到的可能是空的。你可以先把那份原文导出来看看。<br>'
+       + '<span style="display:inline-block;margin-top:10px">'
+       + '<button class="btn" style="display:inline-block;width:auto;padding:9px 14px;margin:0 8px 0 0;font-size:14px" '
+       +   'onclick="exportCorrupt()">导出原始数据</button>'
+       + '<button class="btn" style="display:inline-block;width:auto;padding:9px 14px;margin:0;font-size:14px" '
+       +   'onclick="dropCorrupt()">丢弃它</button>'
+       + '</span></div>';
+}
+
+function exportCorrupt(){
+  const raw = corruptRaw();
+  if (!raw){ toast("本机没有留存的原始数据"); return; }
+  try{
+    const blob = new Blob([raw], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "film-tap-未读出的原始数据-" + todayLocal() + ".txt";
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    toast("已导出");
+  }catch(e){ toast("导出失败，请换个浏览器试试"); }
+}
+
+function dropCorrupt(){
+  if (!confirm("丢掉这份没能读出来的原始数据？\n\n丢掉之后就真的找不回来了。建议先导出。")) return;
+  try{ localStorage.removeItem(CORRUPT_KEY); }catch(e){}
+  toast("已丢弃");
+  render(true);
 }
 
 function tagBase(){
@@ -1566,8 +1785,7 @@ function saveLoad(id, isEdit){
     loadedAt: $("#f-date").value || todayLocal(),
     shots: Number($("#f-shots").value) || 0,
     total: Number($("#f-total").value) || DEFAULT_FRAMES[c.format] || 0,
-    note: $("#f-note").value.trim(),
-    filmId: filmId(stock)
+    note: $("#f-note").value.trim()
   };
 
   if (roll.total && roll.shots > roll.total){
@@ -1717,16 +1935,18 @@ async function syncToNas(){
   const c = getDav();
   if (!c){ toast("先填 WebDAV 地址"); return; }
 
-  const db = load();
-  db.savedAt = new Date().toISOString();
-  save(db);
+  /* 只是给发出去的那一份盖个时间戳，**不写回本机**。
+     早先这里写了 db.savedAt 再 save()，于是点一次「同步到 NAS」会顺带
+     触发一次私有仓库上传 —— 用户没点过那个按钮，却动了那个仓库。
+     跟 ghPush 里的处理保持一致：只改要发出去的副本。 */
+  const payload = Object.assign({}, load(), { savedAt: new Date().toISOString() });
   toast("同步中…");
 
   try{
     const res = await fetch(davFile(c, DAV_FILE), {
       method: "PUT",
       headers: Object.assign({ "Content-Type": "application/json" }, davHeaders(c)),
-      body: JSON.stringify(db, null, 2)
+      body: JSON.stringify(payload, null, 2)
     });
     if (res.ok || res.status === 201 || res.status === 204)  toast("已同步到 NAS");
     else if (res.status === 401 || res.status === 403)       toast("认证失败，检查账号密码");
@@ -1793,6 +2013,116 @@ function getGh(){
 function saveGh(c){ try{ localStorage.setItem(GH_KEY, JSON.stringify(c)); }catch(e){ toast("存储写入失败，可能是隐私模式"); } }
 function clearGh(){ localStorage.removeItem(GH_KEY); }
 
+/* ── 登录态 ──
+   同步要 owner + repo + token 三样齐全，所以 getGh() 的门槛**不动**（同步逻辑一行没改）。
+   但「已经用 GitHub 登进来了、只是还没选仓库」是个真实状态，界面得能显示出来 ——
+   这是 getGhRaw() 的事。两者只差一件事：要不要 owner / repo。 */
+function getGhRaw(){
+  try{
+    const c = JSON.parse(localStorage.getItem(GH_KEY));
+    if (c && c.token) return c;
+  }catch(e){}
+  return null;
+}
+
+/* 仓库清单只放内存、不落盘：它是「这枚令牌当前看得见什么」的快照，
+   存下来只会在换令牌或撤销授权之后变成一份过期的错误信息。 */
+let ghRepos = null;
+
+/* GET /user 只回答「这枚令牌是谁的」。它是**验证**，不是授权 ——
+   真正的权限判断仍然由后面每一次 contents 调用自己给出，
+   这里过了不代表能写仓库。 */
+async function ghUser(token){
+  let res;
+  try{
+    res = await fetch("https://api.github.com/user", { headers: ghHeaders({ token }) });
+  }catch(e){ return { error:"连不上 GitHub，检查网络" }; }
+  if (res.status === 401) return { error:"令牌无效或已过期（去 GitHub 重新生成一枚）" };
+  if (!res.ok)            return { error:"验证失败：" + res.status };
+  try{ return { user: await res.json() }; }
+  catch(e){ return { error:"GitHub 返回了读不懂的内容" }; }
+}
+
+/* 列仓库只是「省掉手打仓库名」的便利，不是必需能力：
+   fine-grained 令牌如果只勾了一个仓库，这个接口可能列不出东西（甚至 403）。
+   那不是错误，退回手填照样能用 —— 所以失败时给空数组，不抛。 */
+async function ghListRepos(token){
+  let res;
+  try{
+    res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner",
+                      { headers: ghHeaders({ token }) });
+  }catch(e){ return { error:"连不上 GitHub" }; }
+  if (res.status === 401) return { error:"令牌无效或已过期" };
+  if (!res.ok)            return { error:"列不出仓库（" + res.status + "），手填仓库名即可" };
+  try{
+    const j = await res.json();
+    return { repos: Array.isArray(j) ? j : [] };
+  }catch(e){ return { error:"仓库列表读不出来" }; }
+}
+
+/* 只收私有仓库。数据放公开仓库 = 把机身和胶卷清单公开，
+   而且提交进 Git 的内容删不掉 —— 这件事没有「用户自己知道风险就行」的余地。 */
+function onlyPrivate(list){
+  return (list || []).filter(r => r && r.private && r.full_name);
+}
+
+async function verifyGh(){
+  const typed = $("#gh-token").value.trim();
+  const old   = getGhRaw();
+  const token = typed || ((old && old.token) || "");       // 留空 = 沿用已存的令牌
+  if (!token){ toast("先粘一枚 fine-grained 令牌"); return; }
+
+  toast("验证中…");
+  const u = await ghUser(token);
+  if (u.error){ toast(u.error); return; }
+
+  const me = u.user || {};
+  saveGh(Object.assign({}, old || {}, {
+    token,
+    login:  me.login || "",
+    name:   me.name  || "",
+    avatar: me.avatar_url || ""
+  }));
+  ghRepos = null;                       // 换了令牌，旧的仓库清单立刻作废
+  toast(me.login ? "已登录 @" + me.login : "令牌有效");
+
+  const r = await ghListRepos(token);
+  if (!r.error) ghRepos = onlyPrivate(r.repos);
+  render(true);
+}
+
+async function listGhRepos(){
+  const c = getGhRaw();
+  if (!c){ toast("先粘令牌验证一次"); return; }
+
+  toast("读取仓库列表…");
+  const r = await ghListRepos(c.token);
+  if (r.error){ ghRepos = []; toast(r.error); render(true); return; }
+  ghRepos = onlyPrivate(r.repos);
+  toast(ghRepos.length ? "列出 " + ghRepos.length + " 个私有仓库" : "这枚令牌看不到私有仓库");
+  render(true);
+}
+
+/* 选中的仓库落进配置。owner 从 full_name 里切 ——
+   仓库名和用户名都不可能含 "/"，所以切第一个斜杠是安全的，不用去猜。 */
+function useGhRepo(){
+  const c = getGhRaw();
+  if (!c){ toast("先粘令牌验证一次"); return; }
+
+  const full = String($("#gh-pick").value || "").trim();
+  const cut  = full.indexOf("/");
+  if (cut <= 0){ toast("先在上面选一个仓库"); return; }
+
+  saveGh(Object.assign({}, c, {
+    owner:  full.slice(0, cut),
+    repo:   full.slice(cut + 1),
+    path:   c.path   || GH_DEFAULT_PATH,
+    branch: c.branch || "main"
+  }));
+  toast("已连接 " + full);
+  render(true);
+}
+
 /* GitHub 的 contents 走 base64。机身名和备注会写中文，所以不能直接 btoa(字符串) ——
    那在非 Latin1 字符上直接抛错。必须先编码成 UTF-8 字节再转。 */
 function b64encode(str){
@@ -1843,7 +2173,9 @@ async function ghFetch(c){
 }
 
 /* 写远端。先读一次拿 sha 再写，避免在远端堆出一串无意义的版本。 */
-async function ghPush(quiet){
+/* quiet = 自动同步那条路（不弹 toast）；force = 用户已经明确确认过要清空仓库
+   （只有设置页的「清空全部数据 → 连仓库一起清」用它）。 */
+async function ghPush(quiet, force){
   const c = getGh();
   if (!c) return false;
 
@@ -1851,6 +2183,24 @@ async function ghPush(quiet){
   if (cur.error && cur.error.indexOf("找不到") < 0){      // 404 是首次创建，允许继续
     if (!quiet) toast(cur.error);
     return false;
+  }
+
+  /* ⚠️ 整库快照是「后写的赢」，没有合并 —— 所以「本机空、仓库非空」这一次上传
+     等于**把仓库清空**。这条事故路径是真的：本机存储被系统清理（或换了台设备打开），
+     用户随手记了一台机身，那一下就把仓库里二十台全冲掉，而且不报任何错。
+
+     这里选择「拦下来」而不是「问一句」：自动同步（quiet）那条路没人可问。
+     真要清空仓库，走设置页的「清空全部数据」—— 那条路会明确问一次，
+     然后带着 force 过来（force 就是「用户已经点过那两次确定」的意思）。 */
+  if (!force && !cur.error){
+    const localN  = Object.keys(load().cameras).length;
+    const remoteN = Object.keys(cur.db.cameras).length;
+    if (localN === 0 && remoteN > 0){
+      if (!quiet){
+        toast("本机一台机身都没有，仓库里有 " + remoteN + " 台 —— 先点「从仓库拉取」对齐");
+      }
+      return false;
+    }
   }
 
   /* savedAt 只加在要发出去的这一份里，不回写本机 ——
@@ -1955,23 +2305,29 @@ function saveGhFromForm(){
   if (!owner || !repo){ toast("仓库所有者和仓库名都要填"); return; }
 
   const typed = $("#gh-token").value.trim();        // 留空表示沿用已保存的令牌
-  const old   = getGh();
+  /* ⚠️ 这里必须用 getGhRaw 而不是 getGh：刚验证完登录、还没选仓库时，
+     getGh() 是 null（它要求 owner+repo+token 三样齐全）。用 getGh() 的话，
+     用户「登录后又手填了仓库名」，会被要求再粘一次刚粘过的令牌。 */
+  const old   = getGhRaw();
   const token = typed || ((old && old.token) || "");
   if (!token){ toast("要填一枚只读这个仓库的令牌"); return; }
 
-  saveGh({
+  /* Object.assign 带上 old，是为了不把登录时记下的 login / 头像抹掉 */
+  saveGh(Object.assign({}, old || {}, {
     owner, repo, token,
     path:   $("#gh-path").value.trim()   || GH_DEFAULT_PATH,
     branch: $("#gh-branch").value.trim() || "main",
     auto:   !!(old && old.auto)
-  });
+  }));
   toast("已保存");
   render(true);
 }
 
 function clearGhSettings(){
-  if (!confirm("清除本机保存的仓库地址和令牌？仓库里的数据不受影响。")) return;
+  if (!confirm("退出登录，并清除本机保存的仓库地址和令牌？仓库里的数据不受影响，"
+             + "以后粘一次令牌就能重新接上。")) return;
   clearGh();
+  ghRepos = null;
   toast("已清除");
   render(true);
 }
@@ -2029,7 +2385,7 @@ function wipe(){
       + "点「确定」连仓库里的一起清空。\n"
       + "点「取消」保留仓库备份 —— 下次打开这个 App 时会自动把它拉回来。")){
     toast("已清空");
-    ghPush(false).catch(()=>{});
+    ghPush(false, true).catch(()=>{});      // force：用户刚点了两次确定，明确要连仓库一起清
     go("#/");
     return;
   }
@@ -2081,6 +2437,19 @@ ghRehydrate().catch(()=>{});
    免得「点完过片就锁屏」把这次改动丢掉。 */
 window.addEventListener("pagehide", flushGhPush);
 window.addEventListener("visibilitychange", flushGhPush);
+
+/* 键盘把整行当按钮用。role="button" + tabindex 只解决「能聚焦」，
+   聚焦了按回车并不会自己触发 onclick —— 得手动接过去。
+   （用 window 而不是 document：键盘事件会冒泡到 window，
+     而测试用的 DOM 桩只有 window，这样自检里也不会因为文档桩缺方法而炸。） */
+window.addEventListener("keydown", e => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const t = e.target;
+  if (!t || t.tagName !== "DIV" || !t.getAttribute) return;
+  if (t.getAttribute("role") !== "button") return;
+  e.preventDefault();                       // 空格默认会滚页面
+  if (typeof t.click === "function") t.click();
+});
 
 if ("serviceWorker" in navigator && location.protocol === "https:"){
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(()=>{}));
