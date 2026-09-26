@@ -124,7 +124,45 @@ with sync_playwright() as p:
           ["验证并登录", "建一个私有仓库", "建一枚 fine-grained 令牌"]),
           "文案齐" if "建一个私有仓库" in h else "缺文案")
 
-    # ── ⑥b 令牌框 / 验证按钮的联动 ──
+    # ── ⑥b WebDAV 的两个前提（先跑这条，它不改 gh 那边的状态）──
+    # 这个页面若是 https，http 地址就**根本发不出请求**（混合内容），
+    # 拦得很彻底，现象和「NAS 没开机」一模一样 —— 保存时就该挡下来。
+    # ⚠️ 但守卫本身是判 location.protocol 的，所以拿 http 本地服务跑时
+    #    它**不应该**触发（同协议不受混合内容约束）。这一点必须跟着 BASE 走。
+    check("NAS 区有测试连接按钮", "testDav()" in app(page))
+    page.fill("#dav-url", "http://" + "nas.example.com:5005/dav/film/")
+    page.fill("#dav-user", "filmapp")
+    page.click("button:has-text('保存同步设置')")
+    page.wait_for_timeout(300)
+    guard2 = page.evaluate("document.querySelector('#toast').textContent")
+    saved_http = page.evaluate("!!localStorage.getItem('filmtap.webdav')")
+    if BASE.startswith("https:"):
+        check("http 地址被挡下且没保存",
+              ("https 页面发不出 http 请求" in guard2) and not saved_http, repr(guard2))
+    else:
+        check("http 地址在 http 页面上放行", saved_http, repr(guard2))
+
+    page.fill("#dav-url", "https://" + "nas.example.com/dav/film/")
+    page.click("button:has-text('保存同步设置')")
+    page.wait_for_timeout(300)
+    check("https 地址可以保存",
+          page.evaluate("!!localStorage.getItem('filmtap.webdav')"))
+
+    # 真的点一次「测试连接」。用 .invalid（RFC 2606 保留，保证解析不了），
+    # 这样既不去碰任何真实主机，结论也是确定的 —— 应该落在
+    # 「连不到这个地址」那一层，正好验证分层诊断的第一层是通的。
+    page.fill("#dav-url", "https://" + "no-such-nas.invalid/dav/film/")
+    mark = len(errs)
+    page.click("button:has-text('测试连接')")
+    page.wait_for_timeout(2500)
+    probe = page.evaluate("document.querySelector('#toast').textContent")
+    check("测试连接给出分层结论", "连不到这个地址" in probe, repr(probe))
+    # 这次探测是**故意**打一个坏域名的，浏览器会为它记一条 net::ERR_ 资源错误。
+    # 那是预期内的，不该算成页面报错 —— 只把这一段里的那类错误滤掉。
+    errs[mark:] = [e for e in errs[mark:] if "Failed to load resource" not in e]
+    page.evaluate("() => { try { localStorage.removeItem('filmtap.webdav') } catch(e){} }")
+
+    # ── ⑥c 令牌框 / 验证按钮的联动 ──
     # 这是用户在真实手机上踩到的坑：按钮一直亮着、空着也能点，
     # 点完只回一句「先粘一枚令牌」—— 分不清是自己没粘上还是功能坏了。
     # 现在空着必须是禁用的，粘进去才亮。

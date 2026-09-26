@@ -56,7 +56,8 @@ const js = m[1];
 /* ── 最小 DOM / 浏览器桩 ── */
 const store = {};
 const els = {};
-let loc = { origin: "https://film.example.com", pathname: "/", search: "", hash: "" };
+let loc = { origin: "https://film.example.com", protocol: "https:",
+            pathname: "/", search: "", hash: "" };
 
 function el(sel) {
   // 带空格的复合选择器按真实浏览器的行为返回 null
@@ -289,6 +290,39 @@ try {
         "初始禁用=" + start + " 挂上 oninput=" + wired + " 空着不亮=" + emptyStaysOff +
         " 粘了就亮=" + filledLightsUp + " 纯空白不算=" + blankStaysOff);
 } catch (e) { check("验证按钮跟着令牌亮灭", false, "抛异常 " + e.message); }
+
+/* ══════════════════════════════════════════════════════════
+   WebDAV 的两个前提，保存时就得挡住。
+   https 页面发不出 http 请求 —— 浏览器叫它「混合内容」，拦得非常彻底：
+   请求根本不会离开浏览器。于是现象和「NAS 没开机」一模一样，
+   用户会跑去查一个根本没坏的网络（用户的实际场景：外网走 IPv6 DDNS，网络本身是通的）。
+   ══════════════════════════════════════════════════════════ */
+try {
+  clearDav();
+  __setLoc("", "#/settings"); render();
+
+  __setValue("#dav-url", "http://nas.example.com:5005/dav/film/");
+  __setValue("#dav-user", "filmapp");
+  __setValue("#dav-pass", "app-password");
+  saveDavFromForm();
+  const msg1 = __el("#toast").textContent;
+  const mix1 = getDav() === null && /https 页面发不出 http 请求/.test(msg1);
+
+  /* 同一份配置换成 https 就该能存下来 —— 否则这条护栏就是「一律不放行」，
+     而不是「只挡真正用不了的那种」 */
+  __setValue("#dav-url", "https://nas.example.com/dav/film/");
+  saveDavFromForm();
+  const d1 = getDav();
+  const ok2 = !!d1 && d1.url === "https://nas.example.com/dav/film/" && d1.user === "filmapp";
+
+  /* 清空地址 = 清除设置，这条老行为不能被新护栏改掉 */
+  __setValue("#dav-url", "");
+  saveDavFromForm();
+  const ok3 = getDav() === null;
+
+  check("http 地址在 https 页面下被挡", mix1 && ok2 && ok3,
+        "拦住=" + mix1 + " https 能存=" + ok2 + " 清空仍可清=" + ok3);
+} catch (e) { check("http 地址在 https 页面下被挡", false, "抛异常 " + e.message); }
 
 /* ── 同步设置：只落本机、不进源码 ── */
 try {
@@ -580,7 +614,7 @@ try {
     "saveSetup","saveLoad","clearFilm","pickFilm","setFilmFormat","setImportMode",
     "runImport","resetImport","importFromPaste","onImportFile","setImportMap",
     "exportJSON","importJSON",
-    "saveDavFromForm","syncToNas","restoreFromNas","clearDavSettings","saveGhFromForm",
+    "saveDavFromForm","syncToNas","restoreFromNas","testDav","clearDavSettings","saveGhFromForm",
     "ghPush","ghPull","toggleGhAuto","clearGhSettings","wipe","exportCorrupt",
     "verifyGh","listGhRepos","useGhRepo","syncGhVerifyBtn",
     "dropCorrupt","deleteFilm","saveFilm","updatePP","document"];
@@ -1156,6 +1190,55 @@ try {
     check("新设备选完仓库自动拉回", okD1 && okD2 && okD3 && okD4,
           "拉回来了=" + okD1 + " 只读一次远端=" + okD2 +
           " 有数据不覆盖=" + okD3 + " 有数据不读远端=" + okD4);
+
+    /* ══════════════════════════════════════════════════════════
+       WebDAV 的三层诊断。
+       网络不通、被跨域拦、密码不对 —— 这三种在浏览器里抛的都是
+       同一个 TypeError（Failed to fetch），所以旧文案
+       「连不上 NAS，检查地址和网络」**三种情况都会出现**，
+       用户于是跑去查一个根本没坏的网络（用户的实际场景：外网走 IPv6 DDNS
+       域名，网络本身是通的，问题只可能在跨域或证书）。
+       testDav 用一次 no-cors 探测把它们分开。
+       ⚠️ 这个文件是 String.raw 模板串，注释里**不能用反引号**，会截断驱动。
+       ══════════════════════════════════════════════════════════ */
+    __setLoc("", "#/settings"); render();
+    __setValue("#dav-url",  "https://nas.example.com/dav/film/");
+    __setValue("#dav-user", "filmapp");
+    __setValue("#dav-pass", "app-password");
+
+    const probeOK = async (url, opt) => {
+      if (opt && opt.mode === "no-cors") return { ok:true, status:0, type:"opaque" };
+      throw new TypeError("Failed to fetch");
+    };
+
+    /* ① 连 no-cors 探测都抛 → 网络层就不通 */
+    global.fetch = async () => { throw new TypeError("Failed to fetch"); };
+    await testDav();
+    const w1 = /连不到这个地址/.test(__el("#toast").textContent);
+
+    /* ② 探测过了、正常请求被拦 → 网络好着，是 NAS 没允许跨域 */
+    global.fetch = probeOK;
+    await testDav();
+    const w2 = /没允许跨域/.test(__el("#toast").textContent);
+
+    /* ③ 探测过、真请求 404 → 通了，只是还没有备份文件 */
+    global.fetch = async (url, opt) => {
+      if (opt && opt.mode === "no-cors") return { ok:true, status:0, type:"opaque" };
+      return { ok:false, status:404, json: async () => ({}) };
+    };
+    await testDav();
+    const w3 = /还没有备份文件/.test(__el("#toast").textContent);
+
+    /* ④ 认证失败要说成认证失败，别混进「连不上」 */
+    global.fetch = async (url, opt) => {
+      if (opt && opt.mode === "no-cors") return { ok:true, status:0, type:"opaque" };
+      return { ok:false, status:401, json: async () => ({}) };
+    };
+    await testDav();
+    const w4 = /账号密码不对/.test(__el("#toast").textContent);
+
+    check("WebDAV 诊断分得清三种失败", w1 && w2 && w3 && w4,
+          "网络不通=" + w1 + " 跨域被拦=" + w2 + " 无备份=" + w3 + " 密码错=" + w4);
   } catch (e) {
     check("私有仓库同步", false, "抛异常 " + e.message);
   }

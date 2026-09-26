@@ -1486,9 +1486,18 @@ function renderSettings(db){
   h += '<label>密码 / 应用专用密码（可选）</label>'
      + '<input id="dav-pass" type="password" autocomplete="new-password" placeholder="'
      +   (dav && dav.pass ? "已保存，留空就不改" : "") + '">';
-  h += '<div class="hint">建议给 NAS 单独建一个受限账号，别拿主账号密码填这儿。</div>';
+  h += '<div class="hint">建议给 NAS 单独建一个受限账号，别拿主账号密码填这儿。<br>'
+     + '<b>两个前提，不满足就一定连不上：</b>① 地址必须是 <b>https</b> —— '
+     + '这个页面本身是 https 的，浏览器不允许它发出 http 请求（混合内容），'
+     + '拦得和「NAS 没开机」一模一样；② NAS 的 WebDAV 必须允许跨域（CORS），'
+     + '要放行 <span class="mono">Authorization</span> 和 <span class="mono">Content-Type</span> '
+     + '这两个请求头。群晖自带的 WebDAV 默认不放行，会卡在预检。'
+     + '点「测试连接」能分辨是网络不通、密码不对、还是被跨域拦了。</div>';
   h += '</div>';
-  h += '<button class="btn' + (dav ? "" : " primary") + '" onclick="saveDavFromForm()">保存同步设置</button>';
+  h += '<div class="row">'
+     +   '<button class="btn' + (dav ? "" : " primary") + '" onclick="saveDavFromForm()">保存同步设置</button>'
+     +   '<button class="btn" onclick="testDav()">测试连接</button>'
+     + '</div>';
   if (dav){
     h += '<div class="row">'
        +   '<button class="btn" onclick="syncToNas()">立即同步</button>'
@@ -1863,10 +1872,18 @@ function davHeaders(c){
 }
 function davFile(c, name){ return c.url.replace(/\/+$/, "") + "/" + name; }
 
+/* 这个页面是 https 的，所以**发不出 http 请求** —— 浏览器把它叫「混合内容」直接拦掉。
+   拦得很彻底：请求根本不会离开浏览器，所以现象看起来和「NAS 没开机」一模一样。
+   保存时就挡住，别让用户以为配好了，然后反复去查网络和端口。 */
+function davMixedContent(url){
+  return location.protocol === "https:" && /^http:\/\//i.test(url);
+}
+
 function saveDavFromForm(){
   const url = $("#dav-url").value.trim();
   if (!url){ clearDav(); toast("已清除同步设置"); render(true); return; }
   if (!/^https?:\/\//i.test(url)){ toast("地址要以 http:// 或 https:// 开头"); return; }
+  if (davMixedContent(url)){ toast("这个地址在这里用不了：https 页面发不出 http 请求，浏览器会直接拦掉"); return; }
 
   const typed = $("#dav-pass").value;   // 留空表示沿用已保存的密码
   const old = getDav();
@@ -1875,8 +1892,51 @@ function saveDavFromForm(){
     user: $("#dav-user").value,
     pass: typed || ((old && old.pass) || "")
   });
-  toast(/^http:\/\//i.test(url) ? "已保存 —— 注意这是明文 http" : "已保存");
+  toast("已保存");
   render(true);
+}
+
+/* ── 测试连接 ──
+   分三层问清楚，因为这三层的**现象完全一样**（都抛同一个 TypeError），
+   现有那句「连不上 NAS，检查地址和网络」在三种情况下都会出现，
+   于是用户会去查一个根本没坏的网络。
+
+   ① no-cors 探一次（不发凭据、不读响应）—— 它只回答「网络层通不通」。
+   ② 网络通了再发正常请求 —— 能过就是真能用。
+   ③ 网络通、正常请求却被拦 —— 那就只可能是 NAS 没允许跨域（CORS），
+      这不是网络问题，得去 NAS 上开。 */
+async function testDav(){
+  const url = ($("#dav-url").value || "").trim();
+  if (!url){ toast("先填 WebDAV 地址"); return; }
+  if (!/^https?:\/\//i.test(url)){ toast("地址要以 http:// 或 https:// 开头"); return; }
+  if (davMixedContent(url)){ toast("https 页面发不出 http 请求，这个地址在这里用不了"); return; }
+
+  const saved = getDav();
+  const creds = {
+    url,
+    user: ($("#dav-user").value || (saved && saved.user) || ""),
+    pass: ($("#dav-pass").value || (saved && saved.pass) || "")
+  };
+  const target = davFile(creds, DAV_FILE);
+
+  toast("测试中…");
+
+  try{
+    await fetch(target, { mode: "no-cors", method: "GET", cache: "no-store" });
+  }catch(e){
+    toast("连不到这个地址 —— 查域名解析、端口、以及 NAS 是否开机");
+    return;
+  }
+
+  try{
+    const res = await fetch(target, { method: "GET", cache: "no-store", headers: davHeaders(creds) });
+    if (res.status === 401 || res.status === 403){ toast("连得上，但账号密码不对"); return; }
+    if (res.ok)                 { toast("连通 —— 已经有备份文件"); return; }
+    if (res.status === 404)     { toast("连通 —— 还没有备份文件，点「立即同步」上传第一份"); return; }
+    toast("连得上，但服务器回了 " + res.status);
+  }catch(e){
+    toast("网络通，请求被浏览器拦了 —— 多半是 NAS 没允许跨域（CORS）");
+  }
 }
 
 function clearDavSettings(){
@@ -1907,7 +1967,10 @@ async function syncToNas(){
     else if (res.status === 401 || res.status === 403)       toast("认证失败，检查账号密码");
     else                                                     toast("同步失败：" + res.status);
   }catch(e){
-    toast("连不上 NAS，检查地址和网络");
+    /* 走到这儿的原因有三种，抛出的却是同一个异常：网络真的不通、被跨域拦、
+       https 页面发不出 http。所以别把话说死成「网络问题」——
+       指向那个能分辨的诊断，而不是让人去查一个没坏的网络。 */
+    toast("请求被浏览器拦下了 —— 点「测试连接」看是网络还是跨域");
   }
 }
 
@@ -1941,7 +2004,7 @@ async function restoreFromNas(){
     toast("已从 NAS 恢复 " + remoteN + " 台机身");
     go("#/");
   }catch(e){
-    toast("连不上 NAS，检查地址和网络");
+    toast("请求被浏览器拦下了 —— 点「测试连接」看是网络还是跨域");
   }
 }
 
