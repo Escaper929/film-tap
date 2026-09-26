@@ -2121,6 +2121,12 @@ function useGhRepo(){
   }));
   toast("已连接 " + full);
   render(true);
+
+  /* 新设备上「粘令牌 → 选仓库」之后本机还是空的 —— 因为自动回灌只在页面启动时跑一次。
+     不在这儿补一下的话，流程会停在「连上了，但一台机身都没有」，看着像没成功。
+     ghRehydrate 只在**本机一台机身都没有**时才动手，所以这里不可能覆盖掉什么。
+     （把 promise return 出去只是为了让自检能 await 这次拉取，浏览器里没人看返回值。） */
+  return ghRehydrate().catch(()=>{});
 }
 
 /* GitHub 的 contents 走 base64。机身名和备注会写中文，所以不能直接 btoa(字符串) ——
@@ -2321,6 +2327,10 @@ function saveGhFromForm(){
   }));
   toast("已保存");
   render(true);
+
+  /* 手填那条路同理：刚在一台新设备上配好仓库、本机却是空的，
+     不顺手拉一次就会停在空库上。ghRehydrate 自己会把「本机有数据」挡掉。 */
+  return ghRehydrate().catch(()=>{});
 }
 
 function clearGhSettings(){

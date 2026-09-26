@@ -961,6 +961,11 @@ try {
       { full_name:"octocat/blog",          private:false },
       { full_name:"octocat/film-tap-bak",  private:true  }
     ];
+    /* 「远程仓库里的数据」+ 它被读了几次 —— 后半段要用次数证明
+       「本机有数据时不会去读远端」，而不是只看结果对不对。 */
+    const REMOTE_DB = { version:2, films:{}, cameras:{
+      x1:{ id:"x1", name:"仓库里的机器", format:"135", loaded:null, history:[] } } };
+    let contentsGets = 0;
 
     const ghStub = reposOk => async (url, opt) => {
       const u = String(url), h = (opt && opt.headers) || {};
@@ -970,6 +975,11 @@ try {
                        : { ok:false, status:403, json: async()=>({}) };
       }
       if (u.indexOf("/user") >= 0) return { ok:true, status:200, json: async()=>ME };
+      if (u.indexOf("/contents/") >= 0) {
+        contentsGets++;
+        return { ok:true, status:200,
+                 json: async()=>({ content:b64encode(JSON.stringify(REMOTE_DB)), sha:"s9" }) };
+      }
       return { ok:false, status:404, json: async()=>({}) };
     };
 
@@ -989,7 +999,7 @@ try {
     const okL4 = uiL.indexOf("octocat/blog") < 0 && uiL.indexOf("octocat/film-tap-bak") >= 0;
 
     __setValue("#gh-pick", "octocat/film-tap-data");
-    useGhRepo();
+    await useGhRepo();
     const gd   = getGh();
     const okL5 = !!gd && gd.owner === "octocat" && gd.repo === "film-tap-data" &&
                  gd.path === "data.json" && gd.branch === "main" && gd.login === "octocat";
@@ -1049,6 +1059,35 @@ try {
     check("空库不会清空仓库", okE1 && okE2 && okE3 && okE4 && okE5 && okE6,
           "被拦=" + okE1 + " 没发请求=" + okE2 + " 有数据照传=" + okE3 + " 只发一次=" + okE4 +
           " 明确清空放行=" + okE5 + " force 只发一次=" + okE6);
+
+    /* ── 新设备：粘令牌 → 选仓库之后，数据得自己回来 ──
+       自动回灌原本只在页面启动时跑一次，所以这条流程会停在「连上了、但一台机身都没有」，
+       看着像没成功。触发点补在「选完仓库」那一刻。
+       下半段用**读取次数**证明它没有越界：本机有数据时一次远端都不该读。 */
+    clearGh(); ghRepos = null; clearLocal();
+    saveGh({ token:PAT, login:"octocat", auto:false });
+    global.fetch = ghStub(true);
+    contentsGets = 0;
+    __setValue("#gh-pick", "octocat/film-tap-data");
+    await useGhRepo();
+    const okD1 = !!load().cameras.x1;
+    const okD2 = contentsGets === 1;
+
+    /* 本机已经有数据 → 这次连接绝不能被远端覆盖掉 */
+    save({ version:2, films:{},
+           cameras:{ mine:{ id:"mine", name:"本机自己的", format:"135", loaded:null, history:[] } } });
+    saveGh({ owner:"octocat", repo:"film-tap-data", token:PAT,
+             path:"data.json", branch:"main", auto:false });
+    global.fetch = ghStub(true);
+    contentsGets = 0;
+    await useGhRepo();
+    const after = load().cameras;
+    const okD3 = !!after.mine && !after.x1;
+    const okD4 = contentsGets === 0;
+
+    check("新设备选完仓库自动拉回", okD1 && okD2 && okD3 && okD4,
+          "拉回来了=" + okD1 + " 只读一次远端=" + okD2 +
+          " 有数据不覆盖=" + okD3 + " 有数据不读远端=" + okD4);
   } catch (e) {
     check("私有仓库同步", false, "抛异常 " + e.message);
   }
