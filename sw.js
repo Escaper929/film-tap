@@ -8,11 +8,11 @@
    SHELL 里那些文件的内容指纹，`_selftest.js` 会算一遍比对。
    对不上就自检失败，逼你改这一行；改了这一行 sw.js 的字节就变了，
    浏览器才会去装新 SW。版本号和指纹两个都要动。 */
-const CACHE = "filmtap-v15";
+const CACHE = "filmtap-v16";
 const SHELL = ["./", "./index.html", "./manifest.webmanifest"];
 /* SHA-256(index.html + "\n" + manifest.webmanifest)，按换行归一化后算。
    算错不要紧：跑 `node _selftest.js` 会把正确的值打出来，照抄即可。 */
-const SHELL_FP = "ec001cff847ce7bb198f35bf373283a580c2ccae37a12526fc74e0b168c41715";
+const SHELL_FP = "f7a5077d186565e9ef2584781ef78915bb7f7e7bb2e25cfad3931ce33e88f2b6";
 
 self.addEventListener("install", e => {
   e.waitUntil(
