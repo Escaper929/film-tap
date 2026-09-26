@@ -33,7 +33,7 @@ const CRED_RULES = [
    也就是说，真正的暴露面是「仓库可见范围」，不是「站点可访问范围」。 */
 const SHIPPED = [
   "index.html", "sw.js", "manifest.webmanifest",
-  "README.md", "_selftest.js", "_shots.py",
+  "README.md", "_selftest.js", "_shots.py", "_firstrun.py",
   "model/build_fob.py", "model/fob.scad", "model/preview.py", "model/render.py"
 ];
 for (const f of SHIPPED) {
