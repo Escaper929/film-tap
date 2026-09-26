@@ -100,8 +100,13 @@ with sync_playwright() as p:
     page.wait_for_timeout(700)
     h = app(page)
     check("刷新后数据还在", "Kodak Portra 400" in h and "我的第一台" in h)
-    check("刷新后 SW 已接管",
-          page.evaluate("!!navigator.serviceWorker.controller") is True)
+    # app 只在 https 下注册 SW（`location.protocol === "https:"` 那道判断），
+    # 所以拿 http 本地服务跑的时候这条天然不成立 —— 跳过，不算失败。
+    if BASE.startswith("https:"):
+        check("刷新后 SW 已接管",
+              page.evaluate("!!navigator.serviceWorker.controller") is True)
+    else:
+        print("%-34s %s" % ("刷新后 SW 已接管", "跳过（http 本地跑，SW 只在 https 注册）"))
 
     # ── ⑤ 统计页：一台上不了卷的机身 ──
     page.evaluate("location.hash = '#/stats'")
@@ -118,6 +123,47 @@ with sync_playwright() as p:
     check("设置页三步向导在", all(s in h for s in
           ["验证并登录", "建一个私有仓库", "建一枚 fine-grained 令牌"]),
           "文案齐" if "建一个私有仓库" in h else "缺文案")
+
+    # ── ⑥b 令牌框 / 验证按钮的联动 ──
+    # 这是用户在真实手机上踩到的坑：按钮一直亮着、空着也能点，
+    # 点完只回一句「先粘一枚令牌」—— 分不清是自己没粘上还是功能坏了。
+    # 现在空着必须是禁用的，粘进去才亮。
+    dis = lambda: page.evaluate("!!document.querySelector('#gh-verify').disabled")
+    check("未粘令牌时验证按钮禁用", dis() is True)
+    check("令牌框挂上了 oninput", 'oninput="syncGhVerifyBtn()"' in h)
+
+    page.fill("#gh-token", "probe" + "-token-0123456789")
+    page.wait_for_timeout(250)
+    check("粘了令牌按钮就亮", dis() is False)
+
+    page.fill("#gh-token", "   ")
+    page.wait_for_timeout(250)
+    check("只填空格不算粘了", dis() is True)
+
+    # 守卫的文案要指路（说「哪个框」），而不是只丢一句「先粘令牌」
+    page.evaluate("() => { document.querySelector('#gh-token').value = ''; }")
+    page.evaluate("() => verifyGh()")
+    page.wait_for_timeout(250)
+    guard = page.evaluate("document.querySelector('#toast').textContent")
+    check("空令牌的提示会指路", "访问令牌" in guard, repr(guard))
+
+    # 真的粘上之后，点下去必须走到发请求那一步
+    page.fill("#gh-token", "probe" + "-token-0123456789")
+    page.wait_for_timeout(200)
+    page.evaluate("""() => {
+        window.__hits = [];
+        window.fetch = (u, o) => { window.__hits.push(String(u));
+            return Promise.resolve({ ok:true, status:200,
+                json: async () => ({ login:'probe', name:'Probe' }) }); };
+    }""")
+    page.click("#gh-verify")
+    page.wait_for_timeout(600)
+    hits = " ".join(page.evaluate("window.__hits"))
+    check("粘了之后点得动且真的发请求",
+          "api.github.com/user" in hits, hits[:60] or "一个请求都没发")
+    check("验证成功后头部显示账号", "@probe" in app(page))
+    # 把这次登录态清掉，免得影响后面几步
+    page.evaluate("() => { try { localStorage.removeItem('filmtap.github') } catch(e){} }")
 
     # ── ⑦ 库里有东西时，?demo=1 必须拒绝覆盖 ──
     # bootDemo 里有 `if (!Object.keys(load().cameras).length)` 这道判断，

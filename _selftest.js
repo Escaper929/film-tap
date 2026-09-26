@@ -255,6 +255,41 @@ try {
         "留空=" + a + " 填0=" + b + " 填24=" + c);
 } catch (e) { check("总张数留空回落到画幅默认", false, "抛异常 " + e.message); }
 
+/* ══════════════════════════════════════════════════════════
+   「验证并登录」按钮必须跟着令牌框亮灭。
+   修的是这个真实故障（用户实测报的）：按钮一直亮着、空着也能点，
+   点完只回一句「先粘一枚令牌」—— 用户分不清是自己没粘上、
+   还是这个功能坏了。在真实浏览器里复现过：框里有东西时代码路径是对的
+   （唯一一个 #gh-token、value 读得到、吐司变成「已登录 @probe」），
+   错的是它**不告诉用户框是空的**。
+   ══════════════════════════════════════════════════════════ */
+try {
+  localStorage.removeItem("filmtap.github");
+  __setLoc("", "#/settings"); render();
+  const html  = __app();
+  const start = html.indexOf('id="gh-verify" disabled') >= 0;
+  const wired = html.indexOf('oninput="syncGhVerifyBtn()"') >= 0;
+
+  __setValue("#gh-token", "");
+  syncGhVerifyBtn();
+  const emptyStaysOff = __el("#gh-verify").disabled === true;
+
+  __setValue("#gh-token", "github_" + "pat_" + "A".repeat(20));
+  syncGhVerifyBtn();
+  const filledLightsUp = __el("#gh-verify").disabled === false;
+
+  /* 粘贴时爱带上换行 / 空格。光看「非空」就点亮的话，一个空格也能把按钮点亮，
+     然后用户拿到一个语焉不详的 401 —— 空白不算内容。 */
+  __setValue("#gh-token", "   \n  ");
+  syncGhVerifyBtn();
+  const blankStaysOff = __el("#gh-verify").disabled === true;
+
+  check("验证按钮跟着令牌亮灭",
+        start && wired && emptyStaysOff && filledLightsUp && blankStaysOff,
+        "初始禁用=" + start + " 挂上 oninput=" + wired + " 空着不亮=" + emptyStaysOff +
+        " 粘了就亮=" + filledLightsUp + " 纯空白不算=" + blankStaysOff);
+} catch (e) { check("验证按钮跟着令牌亮灭", false, "抛异常 " + e.message); }
+
 /* ── 同步设置：只落本机、不进源码 ── */
 try {
   __setLoc("", "#/settings"); render();
@@ -547,7 +582,7 @@ try {
     "exportJSON","importJSON",
     "saveDavFromForm","syncToNas","restoreFromNas","clearDavSettings","saveGhFromForm",
     "ghPush","ghPull","toggleGhAuto","clearGhSettings","wipe","exportCorrupt",
-    "verifyGh","listGhRepos","useGhRepo",
+    "verifyGh","listGhRepos","useGhRepo","syncGhVerifyBtn",
     "dropCorrupt","deleteFilm","saveFilm","updatePP","document"];
 
   /* 属性在交给 JS 之前，浏览器会先把 HTML 实体还原成字符 */
@@ -1132,6 +1167,10 @@ try {
 global.__setLoc = (search, hash) => { loc.search = search; loc.hash = hash; };
 global.__app = () => el("#app").innerHTML;
 global.__setValue = (sel, v) => { el(sel).value = v; };
+/* 读回桩元素的属性（disabled / style 之类）。只给 value 一个 setter 是不够的：
+   「按钮该不该亮」这件事落在 disabled 上，光看 innerHTML 里的字符串
+   证明不了按下之后它真的变了。 */
+global.__el = sel => el(sel);
 global.__report = (rows, pass, fail) => {
   console.log("检查项".padEnd(20) + "结果".padEnd(10) + "备注");
   console.log("-".repeat(88));

@@ -101,6 +101,12 @@ h2{font-size:15px;font-weight:500;color:var(--ink-2);margin:28px 0 10px}
 .btn.danger{color:var(--danger);border-color:var(--line)}
 .row{display:flex;gap:10px}
 .row .btn{margin-bottom:10px}
+/* 禁用的按钮要一眼看出是「还不能点」。只把实心主色降透明度是不够的 ——
+   它依然是整页最显眼的一块暖色，用户照样会去点，然后觉得「点了没反应」。
+   所以直接把填充换成灰底，并且用属性选择器压过 .btn.primary（同优先级，
+   靠写在后面生效）。放在所有 .btn.* 变体**之后**，这个顺序不能挪。 */
+.btn:disabled{background:var(--surface-2);border-color:var(--line);color:var(--ink-3);cursor:default}
+.btn:disabled:active{opacity:1}
 
 /* 表单 */
 label{display:block;font-size:13px;color:var(--ink-2);margin:16px 0 6px}
@@ -1515,11 +1521,19 @@ function renderSettings(db){
        + '本机现在是空的、但以前配过这个仓库？把令牌再粘一次就能把数据拉回来 —— '
        + '浏览器清理存储时，令牌和仓库地址是<b>一起</b>被清掉的，所以它不会自己接上。</div>';
     h += '</div>';
-    h += '<label>访问令牌</label>'
-       + '<input id="gh-token" type="password" autocomplete="new-password" placeholder="粘贴 fine-grained token">';
+    h += '<label>访问令牌（必填）</label>'
+       + '<input id="gh-token" type="password" autocomplete="new-password" '
+       +   'autocapitalize="none" autocorrect="off" spellcheck="false" '
+       +   'oninput="syncGhVerifyBtn()" placeholder="粘贴 fine-grained token">';
     h += '<div class="hint">令牌只保存在这台设备上，<b>不会写进代码、也不会随网页发布出去</b>。'
-       + '手机丢了就回 GitHub 把那枚令牌撤销掉。</div>';
-    h += '<button class="btn primary" onclick="verifyGh()">验证并登录</button>';
+       + '手机丢了就回 GitHub 把那枚令牌撤销掉。<br>'
+       + '粘完就点下面的按钮 —— <b>页面一旦刷新，这个框会清空</b>，得重新粘一次。</div>';
+    /* 空着就点不动。这不是防呆，是**为了让「没粘上」看得见**：
+       粘成功按钮立刻变亮，没变亮就说明没粘进去。
+       以前它一直亮着，点了只回一句「先粘一枚令牌」，
+       用户根本分不清是自己没粘上、还是这个功能坏了。 */
+    h += '<button class="btn primary" id="gh-verify" disabled '
+       + 'onclick="verifyGh()">验证并登录</button>';
   } else {
     h += '<div class="card" style="padding:14px 16px;display:flex;align-items:center;gap:12px">';
     if (gh.avatar){
@@ -2004,10 +2018,21 @@ function onlyPrivate(list){
 }
 
 async function verifyGh(){
-  const typed = $("#gh-token").value.trim();
+  /* 从 GitHub 页面复制令牌时很容易带进换行或空格。令牌本身只可能是
+     [A-Za-z0-9_]，所以直接抹掉所有空白 —— 不抹的话用户拿到的是一个
+     语焉不详的 401，而真正的原因只是一个看不见的换行符。 */
+  const box   = $("#gh-token");
+  const typed = (box ? box.value : "").replace(/\s+/g, "");
   const old   = getGhRaw();
   const token = typed || ((old && old.token) || "");       // 留空 = 沿用已存的令牌
-  if (!token){ toast("先粘一枚 fine-grained 令牌"); return; }
+  if (!token){
+    /* 光说「先粘一枚令牌」等于没说：用户手里可能正捏着令牌，
+       只是没粘进去（或者页面刷新把它清空了）。所以把光标送进那个框里，
+       并把话说成「哪个框」。 */
+    if (box) box.focus();
+    toast("上面「访问令牌」那个框是空的 —— 先把令牌粘进去");
+    return;
+  }
 
   toast("验证中…");
   const u = await ghUser(token);
@@ -2026,6 +2051,20 @@ async function verifyGh(){
   const r = await ghListRepos(token);
   if (!r.error) ghRepos = onlyPrivate(r.repos);
   render(true);
+}
+
+/* 「验证并登录」按钮跟着令牌框的内容亮灭。
+   ⚠️ 只在**未登录**状态下挂这个钩子（渲染时才给按钮 id 和 disabled）。
+   登录之后那个按钮是「用这枚令牌重新验证」，令牌留空表示沿用已存的 ——
+   那时候空着是合法的，绝不能把按钮锁死。 */
+function syncGhVerifyBtn(){
+  const btn = $("#gh-verify");
+  if (!btn) return;
+  const box = $("#gh-token");
+  const has = ((box ? box.value : "")).replace(/\s+/g, "").length > 0;
+  /* 只改 disabled，外观交给 CSS 的 .btn:disabled ——
+     样式和状态各留一处，免得以后调颜色要改两个地方。 */
+  btn.disabled = !has;
 }
 
 async function listGhRepos(){
