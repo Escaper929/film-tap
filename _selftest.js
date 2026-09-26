@@ -1211,10 +1211,15 @@ try {
       throw new TypeError("Failed to fetch");
     };
 
-    /* ① 连 no-cors 探测都抛 → 网络层就不通 */
+    /* ① 连 no-cors 探测都抛 → 连接根本建不起来。
+       这一层的文案必须同时点到**证书**：自签证书在 TLS 阶段就被拒，
+       抛的异常和「DNS 解析不了」一模一样。飞牛 / 群晖自带的 WebDAV
+       默认就是自签证书 —— 漏了这两个字，用户就去查一个没坏的域名了。 */
     global.fetch = async () => { throw new TypeError("Failed to fetch"); };
     await testDav();
-    const w1 = /连不到这个地址/.test(__el("#toast").textContent);
+    const t1 = __el("#toast").textContent;
+    const w1 = /连不到这个地址/.test(t1);
+    const w5 = /证书/.test(t1);
 
     /* ② 探测过了、正常请求被拦 → 网络好着，是 NAS 没允许跨域 */
     global.fetch = probeOK;
@@ -1237,8 +1242,9 @@ try {
     await testDav();
     const w4 = /账号密码不对/.test(__el("#toast").textContent);
 
-    check("WebDAV 诊断分得清三种失败", w1 && w2 && w3 && w4,
-          "网络不通=" + w1 + " 跨域被拦=" + w2 + " 无备份=" + w3 + " 密码错=" + w4);
+    check("WebDAV 诊断分得清四种失败", w1 && w2 && w3 && w4 && w5,
+          "网络/证书不通=" + w1 + " 提到证书=" + w5 + " 跨域被拦=" + w2 +
+          " 无备份=" + w3 + " 密码错=" + w4);
   } catch (e) {
     check("私有仓库同步", false, "抛异常 " + e.message);
   }

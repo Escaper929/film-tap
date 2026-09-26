@@ -1487,12 +1487,16 @@ function renderSettings(db){
      + '<input id="dav-pass" type="password" autocomplete="new-password" placeholder="'
      +   (dav && dav.pass ? "已保存，留空就不改" : "") + '">';
   h += '<div class="hint">建议给 NAS 单独建一个受限账号，别拿主账号密码填这儿。<br>'
-     + '<b>两个前提，不满足就一定连不上：</b>① 地址必须是 <b>https</b> —— '
-     + '这个页面本身是 https 的，浏览器不允许它发出 http 请求（混合内容），'
-     + '拦得和「NAS 没开机」一模一样；② NAS 的 WebDAV 必须允许跨域（CORS），'
-     + '要放行 <span class="mono">Authorization</span> 和 <span class="mono">Content-Type</span> '
-     + '这两个请求头。群晖自带的 WebDAV 默认不放行，会卡在预检。'
-     + '点「测试连接」能分辨是网络不通、密码不对、还是被跨域拦了。</div>';
+     + '<b>三个前提，缺一个就连不上</b>（而且这三种失败长得一模一样，都像「NAS 没开机」）：<br>'
+     + '① 地址必须是 <b>https</b>，且<b>证书要被浏览器认可</b> —— 本页是 https，'
+     + '发不出 http 请求（混合内容）；自签证书则在 TLS 阶段就被拒。'
+     + '飞牛、群晖自带的 WebDAV 默认都是自签证书。<br>'
+     + '② WebDAV 必须允许跨域（CORS），要放行 <span class="mono">Authorization</span>、'
+     + '<span class="mono">Content-Type</span>，并且 <span class="mono">OPTIONS</span> 预检也得有人应答。<br>'
+     + '③ 飞牛、群晖自带的 WebDAV 都<b>不提供</b> CORS 设置 —— 所以通常要在前面加一层反代'
+     + '（Lucky / Nginx）补这组头并做 TLS；或者更省事：把本页也放在同一个域名和端口下，'
+     + '和 WebDAV <b>同源</b>，那就根本没有跨域这回事。<br>'
+     + '点「测试连接」能分辨是网络/证书不通、密码不对、还是被跨域拦了。</div>';
   h += '</div>';
   h += '<div class="row">'
      +   '<button class="btn' + (dav ? "" : " primary") + '" onclick="saveDavFromForm()">保存同步设置</button>'
@@ -1901,10 +1905,12 @@ function saveDavFromForm(){
    现有那句「连不上 NAS，检查地址和网络」在三种情况下都会出现，
    于是用户会去查一个根本没坏的网络。
 
-   ① no-cors 探一次（不发凭据、不读响应）—— 它只回答「网络层通不通」。
+   ① no-cors 探一次（不发凭据、不读响应）—— 它只回答「这一趟连接建不建得起来」。
+      注意它同时也覆盖**证书**：自签证书在 TLS 阶段就被拒，请求同样发不出去。
+      不是多余的一层 —— 飞牛/群晖自带的 WebDAV 默认就是自签证书，这是最常见的一种。
    ② 网络通了再发正常请求 —— 能过就是真能用。
    ③ 网络通、正常请求却被拦 —— 那就只可能是 NAS 没允许跨域（CORS），
-      这不是网络问题，得去 NAS 上开。 */
+      这不是网络问题，得在 NAS 前面加一层能发 CORS 头的反代。 */
 async function testDav(){
   const url = ($("#dav-url").value || "").trim();
   if (!url){ toast("先填 WebDAV 地址"); return; }
@@ -1924,7 +1930,10 @@ async function testDav(){
   try{
     await fetch(target, { mode: "no-cors", method: "GET", cache: "no-store" });
   }catch(e){
-    toast("连不到这个地址 —— 查域名解析、端口、以及 NAS 是否开机");
+    /* 这一层同时兜住证书：自签证书在 TLS 阶段就被拒，请求根本没发出去，
+       抛的异常和「DNS 解析不了」一模一样。所以必须把证书写进这句里，
+       否则用默认自签证书的 NAS 用户会去查一个没坏的域名。 */
+    toast("连不到这个地址 —— 查域名解析、端口、NAS 是否开机，以及证书（自签的会被浏览器拒掉）");
     return;
   }
 
@@ -1935,7 +1944,9 @@ async function testDav(){
     if (res.status === 404)     { toast("连通 —— 还没有备份文件，点「立即同步」上传第一份"); return; }
     toast("连得上，但服务器回了 " + res.status);
   }catch(e){
-    toast("网络通，请求被浏览器拦了 —— 多半是 NAS 没允许跨域（CORS）");
+    /* 网络通、请求却没过 —— 只剩跨域这一种可能。给出**方向**而不是现象：
+       NAS 自带的 WebDAV（飞牛、群晖都算）不提供 CORS 设置，单纯重试永远不会好。 */
+    toast("网络通，但 NAS 这一层没允许跨域（CORS）—— 得在它前面加一层反代补上这组头");
   }
 }
 

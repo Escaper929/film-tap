@@ -11,9 +11,14 @@
 - 本地过、线上没过 → sw.js 忘了动，手机还在吃旧缓存
 - 线上过、本地没过 → 基本不可能，但也能立刻看出来
 
-用法：
-    python _firstrun.py                        # 线上 Pages
-    python _firstrun.py http://127.0.0.1:8123   # 本地服务
+用法（注意解释器：playwright 装在工程 venv 里，系统 python3 没有）：
+
+    PY=/Users/lh/.workbuddy/binaries/python/envs/default/bin/python
+    $PY _firstrun.py                             # 线上 Pages
+    $PY _firstrun.py http://127.0.0.1:8123       # 本地服务
+
+直接敲 `python _firstrun.py` 会报 ModuleNotFoundError: playwright —— 那不是
+脚本坏了，是解释器选错了。上面那个 venv 才是装了 playwright 的那个。
 
 退出码非 0 = 有失败项或有 JS 报错。需要 playwright（用本机已装的 Edge，
 不额外下载内核，跟 _shots.py 一致）。
@@ -124,12 +129,18 @@ with sync_playwright() as p:
           ["验证并登录", "建一个私有仓库", "建一枚 fine-grained 令牌"]),
           "文案齐" if "建一个私有仓库" in h else "缺文案")
 
-    # ── ⑥b WebDAV 的两个前提（先跑这条，它不改 gh 那边的状态）──
+    # ── ⑥b WebDAV 的三个前提（先跑这条，它不改 gh 那边的状态）──
     # 这个页面若是 https，http 地址就**根本发不出请求**（混合内容），
     # 拦得很彻底，现象和「NAS 没开机」一模一样 —— 保存时就该挡下来。
     # ⚠️ 但守卫本身是判 location.protocol 的，所以拿 http 本地服务跑时
     #    它**不应该**触发（同协议不受混合内容约束）。这一点必须跟着 BASE 走。
     check("NAS 区有测试连接按钮", "testDav()" in app(page))
+    # 提示得把三个前提都写出来，并且点名「自签证书」和「同源」这两条出路 ——
+    # 飞牛 / 群晖自带的 WebDAV 恰好在证书和 CORS 上同时不合格。
+    settings_h = app(page)
+    check("NAS 提示写全三个前提",
+          all(s in settings_h for s in
+              ["证书要被浏览器认可", "允许跨域", "同源"]))
     page.fill("#dav-url", "http://" + "nas.example.com:5005/dav/film/")
     page.fill("#dav-user", "filmapp")
     page.click("button:has-text('保存同步设置')")
@@ -151,12 +162,15 @@ with sync_playwright() as p:
     # 真的点一次「测试连接」。用 .invalid（RFC 2606 保留，保证解析不了），
     # 这样既不去碰任何真实主机，结论也是确定的 —— 应该落在
     # 「连不到这个地址」那一层，正好验证分层诊断的第一层是通的。
+    # 这一层的文案还**必须点到证书**：自签证书在 TLS 阶段被拒，抛的异常
+    # 和 DNS 解析不了完全一样，而飞牛 / 群晖默认就是自签证书。
     page.fill("#dav-url", "https://" + "no-such-nas.invalid/dav/film/")
     mark = len(errs)
     page.click("button:has-text('测试连接')")
     page.wait_for_timeout(2500)
     probe = page.evaluate("document.querySelector('#toast').textContent")
-    check("测试连接给出分层结论", "连不到这个地址" in probe, repr(probe))
+    check("测试连接给出分层结论",
+          ("连不到这个地址" in probe) and ("证书" in probe), repr(probe))
     # 这次探测是**故意**打一个坏域名的，浏览器会为它记一条 net::ERR_ 资源错误。
     # 那是预期内的，不该算成页面报错 —— 只把这一段里的那类错误滤掉。
     errs[mark:] = [e for e in errs[mark:] if "Failed to load resource" not in e]
