@@ -7,10 +7,12 @@ name: 构建镜像
 #   ① 构建**之前**跑 node _selftest.js。它是这里唯一能发现
 #      「改了 index.html 却忘了同步 sw.js 的 SHELL_FP」的地方 ——
 #      那个错漏会让线上是新版、手机上永远停在旧版，而且**不报任何错**。
-#   ② 构建之后再拿真镜像起一个容器，走一遍「探活 → 设密码 → 登录 → 存 → 读」。
+#      自检不过就根本不构建，宁可没有新镜像。
+#   ② 构建之后再拿真镜像起一个容器，走一遍「探活 → 设密码 → 登录 → 存 → 读 → 未登录 401」。
 #      这一步能抓到 COPY 漏了文件（镜像起不来）、或者 .dockerignore
 #      手滑把 server.py 挡掉这类事故 —— 光看构建成功是看不出来的。
-#   ③ 镜像只在自检过了之后才 push。
+#   ③ **构建推的是不可变的 sha 标签**；latest 和版本 tag 要等②过了才指过去。
+#      反过来做的话，坏镜像会先一步挂在可部署的标签上，watchtower 一小时后就把它拉下来了。
 
 on:
   push:
@@ -55,14 +57,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 算标签
+      # 只出一个**不可变**的 sha 标签。latest 和版本 tag 要等冒烟过了才指过去 ——
+      # 否则坏镜像会先一步挂在可部署的标签上，watchtower 那一小时后就把它拉下来了。
+      - name: 算标签（只出 sha）
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
             type=sha,prefix=sha-,format=short
 
       - name: 构建并推送
@@ -93,6 +97,10 @@ jobs:
           cache-to: type=gha,mode=max
 
       # ② 拿真镜像跑一遍完整流程。这一步才是「镜像能用」的证据。
+      #    ⚠️ 判定一律用 shell 的 case，不要写成 curl | grep -q：
+      #       grep -q 一命中就关管道，curl 那边拿到 EPIPE 报
+      #       “(23) Failure writing output to destination”，配合 set -o pipefail
+      #       会让一个**其实通过了**的断言变成失败。这个坑踩过。
       - name: 冒烟 —— 真镜像起容器，探活 / 设密码 / 登录 / 存 / 读
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -112,30 +120,41 @@ jobs:
             if curl -fsS http://127.0.0.1:18300/api/health >/dev/null 2>&1; then break; fi
             sleep 1
           done
+
           H=$(curl -fsS http://127.0.0.1:18300/api/health)
           echo "health: $H"
-          echo "$H" | grep -q '"app": *"film-tap"'
+          case "$H" in *'"app": "film-tap"'*) ;; *)
+            echo "✗ 探活没有自报 film-tap，别的东西占了这个端口？"; exit 1;; esac
           # 镜像里 FT_ASSUME_HTTPS=1 是默认值 —— 部署形态永远是反代后面，
           # 少给这一条 cookie 就没有 Secure。
-          echo "$H" | grep -q '"https": *true'
+          case "$H" in *'"https": true'*) ;; *)
+            echo "✗ https 字段是 false，会话 cookie 不会带 Secure"; exit 1;; esac
 
           # 设密码：非交互模式下它会读两行同样的密码
           printf 'smoke-password\nsmoke-password\n' \
             | docker exec -i smoke python3 /app/server.py --set-password
-          curl -fsS http://127.0.0.1:18300/api/health | grep -q '"configured": *true'
 
-          curl -fsS -c /tmp/jar -X POST http://127.0.0.1:18300/api/login \
-            -H 'Content-Type: application/json' \
-            -d '{"password":"smoke-password"}' | grep -q '"ok": *true'
+          H2=$(curl -fsS http://127.0.0.1:18300/api/health)
+          case "$H2" in *'"configured": true'*) ;; *)
+            echo "✗ 设完密码 configured 还是 false"; exit 1;; esac
 
-          curl -fsS -b /tmp/jar -X PUT http://127.0.0.1:18300/api/data \
+          LOGIN=$(curl -fsS -c /tmp/jar -X POST http://127.0.0.1:18300/api/login \
+            -H 'Content-Type: application/json' -d '{"password":"smoke-password"}')
+          case "$LOGIN" in *'"ok": true'*) ;; *) echo "✗ 登录没成功：$LOGIN"; exit 1;; esac
+
+          PUT=$(curl -fsS -b /tmp/jar -X PUT http://127.0.0.1:18300/api/data \
             -H 'Content-Type: application/json' \
-            -d '{"data":{"cameras":{"m6":{"id":"m6","name":"冒烟"}}}}' | grep -q '"ok": *true'
-          curl -fsS -b /tmp/jar http://127.0.0.1:18300/api/data | grep -q '"m6"'
+            -d '{"data":{"cameras":{"m6":{"id":"m6","name":"冒烟"}}}}')
+          case "$PUT" in *'"ok": true'*) ;; *) echo "✗ 写入没成功：$PUT"; exit 1;; esac
+
+          GOT=$(curl -fsS -b /tmp/jar http://127.0.0.1:18300/api/data)
+          case "$GOT" in *'"m6"'*) ;; *) echo "✗ 读回来没有 m6：$GOT"; exit 1;; esac
 
           # 静态页面也在镜像里（server.py 之外那三个文件）
-          curl -fsS http://127.0.0.1:18300/ | grep -q 'id="app"'
-          curl -fsS http://127.0.0.1:18300/sw.js | grep -q 'SHELL_FP'
+          PAGE=$(curl -fsS http://127.0.0.1:18300/)
+          case "$PAGE" in *'id="app"'*) ;; *) echo "✗ 首页里没有 #app"; exit 1;; esac
+          SWH=$(curl -fsS http://127.0.0.1:18300/sw.js)
+          case "$SWH" in *SHELL_FP*) ;; *) echo "✗ sw.js 里没有 SHELL_FP"; exit 1;; esac
 
           # 没登录拿不到数据（护住数据的底线）
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18300/api/data)
@@ -144,6 +163,24 @@ jobs:
 
           docker logs smoke
           docker rm -f smoke
+
+      # ③ 冒烟过了才把可部署的标签指过去。imagetools create 是服务端复制
+      #    manifest，不重新构建、不重传层，所以这一步基本是瞬时的。
+      - name: 冒烟过了 —— 把 latest / 版本 tag 指到这个摘要
+        if: github.event_name == 'push'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "→ ${IMAGE}:latest"
+            docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}@${DIGEST}"
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "→ ${IMAGE}:${GITHUB_REF_NAME}"
+            docker buildx imagetools create -t "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}@${DIGEST}"
+          fi
+          docker buildx imagetools inspect "${IMAGE}:latest" 2>/dev/null || true
 
       - name: 失败时把容器日志捞出来
         if: failure()
