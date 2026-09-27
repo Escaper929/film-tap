@@ -4,9 +4,8 @@ name: 构建镜像
 # push 到 main 就出镜像，NAS 上的 watchtower 会把新镜像拉下来重建容器。
 #
 # 三道门，缺一不可：
-#   ① 构建**之前**跑 node _selftest.js。它是这里唯一能发现
-#      「改了 index.html 却忘了同步 sw.js 的 SHELL_FP」的地方 ——
-#      那个错漏会让线上是新版、手机上永远停在旧版，而且**不报任何错**。
+#   ① 构建**之前**跑 node _selftest.js。视图渲染、数据流、凭据护栏，
+#      以及「没有离线缓存」（容器停了页面就该打不开）都在里面。
 #      自检不过就根本不构建，宁可没有新镜像。
 #   ② 构建之后再拿真镜像起一个容器，走一遍「探活 → 设密码 → 登录 → 存 → 读 → 未登录 401」。
 #      这一步能抓到 COPY 漏了文件（镜像起不来）、或者 .dockerignore
@@ -165,7 +164,16 @@ jobs:
           PAGE=$(curl -fsS http://127.0.0.1:18300/)
           case "$PAGE" in *'id="app"'*) ;; *) echo "✗ 首页里没有 #app"; exit 1;; esac
           SWH=$(curl -fsS http://127.0.0.1:18300/sw.js)
-          case "$SWH" in *SHELL_FP*) ;; *) echo "✗ sw.js 里没有 SHELL_FP"; exit 1;; esac
+          # sw.js 也得是新版形态：**不做任何缓存**，但要会自毁。
+          # 这条同时管两件事 —— 文件确实 COPY 进来了，以及它是撤掉离线缓存之后
+          # 的那一版（旧版会 caches.open，那正是「容器停了页面却还能打开」的来源）。
+          # 「不许监听 fetch」那条由 ① 的自检静态钉住，这里不重复。
+          case "$SWH" in *caches.open*)
+            echo "✗ sw.js 里出现了 caches.open —— 缓存又回来了"; exit 1;; esac
+          case "$SWH" in *caches.delete*) ;; *)
+            echo "✗ sw.js 不会清缓存"; exit 1;; esac
+          case "$SWH" in *unregister*) ;; *)
+            echo "✗ sw.js 不会注销自己"; exit 1;; esac
 
           # 没登录拿不到数据（护住数据的底线）
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18300/api/data)
