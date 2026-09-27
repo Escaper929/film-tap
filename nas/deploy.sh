@@ -14,7 +14,7 @@
 #   BASE                 部署根目录，默认 /vol1/@appdata/film-tap（只用来放 data）
 #   PORT                 对外端口，默认 8300。容器内部固定 8300，这里只映射
 #   UID_GID              容器以哪个 uid:gid 跑，默认 1000:1001（数据文件归你，不归 root）
-#   IMAGE                镜像，默认 ghcr.io/escaper929/film-tap:latest
+#   IMAGE                镜像，默认 docker.io/liritian/film-tap:latest
 #   FT_PASSWORD          只在**首次**初始化密码时用；不设就自己进去跑一次 --set-password
 #   WATCHTOWER           yes | no，默认 yes。no 就只部署不装自动更新
 #   WATCHTOWER_IMAGE     默认 nickfedor/watchtower:latest
@@ -49,7 +49,7 @@ SSH_PORT="${SSH_PORT:-22}"
 BASE="${BASE:-/vol1/@appdata/film-tap}"
 PORT="${PORT:-8300}"
 UID_GID="${UID_GID:-1000:1001}"
-IMAGE="${IMAGE:-ghcr.io/escaper929/film-tap:latest}"
+IMAGE="${IMAGE:-docker.io/liritian/film-tap:latest}"
 NAME="film-tap"
 WATCHTOWER="${WATCHTOWER:-yes}"
 WATCHTOWER_IMAGE="${WATCHTOWER_IMAGE:-nickfedor/watchtower:latest}"

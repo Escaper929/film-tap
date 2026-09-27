@@ -144,15 +144,29 @@ push 到 main / 打 v* 标签
         │  ② 构建 linux/amd64
         │  ③ 拿真镜像起一个容器，走一遍
         │     探活 → 设密码 → 登录 → 存 → 读
-        │  ④ 推 ghcr.io/escaper929/film-tap
+        │  ④ 推 docker.io/liritian/film-tap
         │
-   GHCR（镜像仓库）
+   Docker Hub（公开镜像仓库）
         │
    NAS 上的 watchtower（每小时查一次）
         │  有新镜像 → 重建 film-tap 容器
         │
    完事。数据在 data 卷里，换容器不动它，也不用重新登录。
 ```
+
+**推的是 Docker Hub，不是 GHCR。** 理由只有一个字：拉得到。`ghcr.io` 在国内
+经常拉不动，而 watchtower 是无人值守的 —— 拉不到它不会报错，只会一直停在旧镜像上，
+看起来「自动更新配好了」其实从没成功过。Docker Hub 至少还能配镜像加速。
+
+推之前要先在仓库里放两个 secret（**Settings → Secrets and variables → Actions**）：
+
+| Secret | 从哪来 |
+|---|---|
+| `DOCKERHUB_USERNAME` | 你的 Docker Hub 用户名 |
+| `DOCKERHUB_TOKEN` | Docker Hub → Account settings → Personal access tokens，权限给 Read & Write |
+
+少任何一个，CI 会在登录那一步失败 —— 这是好事：宁可没有新镜像，也不要一个推不上去、
+NAS 又拉不到的空欢喜。`.github/workflows/docker.yml` 顶部的注释里也写了这两条。
 
 三道门是有意排成这个顺序的：
 
@@ -185,7 +199,7 @@ NAS_HOST=<你的 NAS 地址> NAS_USER=<SSH 用户> SSH_PORT=<SSH 端口> ./nas/d
 | `BASE` | `/vol1/@appdata/film-tap` | 部署根，只用来放 `data/` |
 | `PORT` | `8300` | 对外端口（容器内部固定 8300，这里只映射） |
 | `UID_GID` | `1000:1001` | 容器以哪个身份跑，让数据文件归你而不是 root |
-| `IMAGE` | `ghcr.io/escaper929/film-tap:latest` | 换标签就能固定版本 |
+| `IMAGE` | `docker.io/liritian/film-tap:latest` | 换标签就能固定版本 |
 | `FT_PASSWORD` | 空 | 只在首次初始化密码时用 |
 | `WATCHTOWER` | `yes` | 设 `no` 就不装自动更新 |
 
@@ -219,7 +233,7 @@ NAS_HOST=<你的 NAS 地址> ./nas/update.sh
 >
 > 还有一点值得知道：自动更新意味着**升级时机不由你决定**。数据和配置都在
 > `data` 卷里，容器换掉不动它们，所以回滚就是换个标签再起一次
-> （`IMAGE=ghcr.io/escaper929/film-tap:sha-xxxxxxx`）。
+> （`IMAGE=docker.io/liritian/film-tap:sha-xxxxxxx`）。
 
 ### 几个刻意的设计
 
@@ -283,7 +297,7 @@ manifest.webmanifest  PWA 清单
 Dockerfile            镜像定义：把上面三个 + server.py 装进去
 .dockerignore         构建上下文白名单（shots/、model/ 不进镜像）
 .github/workflows/
-  docker.yml          自检 → 构建 → 真镜像冒烟 → 推 GHCR
+  docker.yml          自检 → 构建 → 真镜像冒烟 → 推 Docker Hub
 nas/                  后端与部署
   server.py           零第三方依赖的单文件后端：静态 + 会话 + 数据 API
   deploy.sh           幂等部署（拉镜像、起容器、装 watchtower）

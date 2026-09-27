@@ -11,8 +11,15 @@ name: 构建镜像
 #   ② 构建之后再拿真镜像起一个容器，走一遍「探活 → 设密码 → 登录 → 存 → 读 → 未登录 401」。
 #      这一步能抓到 COPY 漏了文件（镜像起不来）、或者 .dockerignore
 #      手滑把 server.py 挡掉这类事故 —— 光看构建成功是看不出来的。
-#   ③ **构建推的是不可变的 sha 标签**；latest 和版本 tag 要等②过了才指过去。
+# ③ **构建推的是不可变的 sha 标签**；latest 和版本 tag 要等②过了才指过去。
 #      反过来做的话，坏镜像会先一步挂在可部署的标签上，watchtower 一小时后就把它拉下来了。
+#
+# 推到 Docker Hub（公开仓库），不是 GHCR —— 因为 NAS 那边要拉得到。
+# 需要仓库里两个 secret：DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+# （Settings → Secrets and variables → Actions）。token 在 Docker Hub 的
+# Account settings → Personal access tokens 建，权限给 Read & Write 就够。
+# 少任何一个，登录那一步就会失败 —— 失败在这里是好事：宁可没有新镜像，
+# 也不要一个推不上去、NAS 又拉不到的空欢喜。
 
 on:
   push:
@@ -26,7 +33,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IMAGE: ghcr.io/escaper929/film-tap
+  IMAGE: docker.io/liritian/film-tap
 
 jobs:
   build:
@@ -34,7 +41,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      packages: write
 
     steps:
       - uses: actions/checkout@v4
@@ -49,13 +55,13 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: 登录 GHCR
+      - name: 登录 Docker Hub
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # 只出一个**不可变**的 sha 标签。latest 和版本 tag 要等冒烟过了才指过去 ——
       # 否则坏镜像会先一步挂在可部署的标签上，watchtower 那一小时后就把它拉下来了。

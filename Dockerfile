@@ -1,6 +1,6 @@
 # film-tap —— 页面和后端同一个进程，一个容器装完。
 #
-# 镜像由 GitHub Actions 自动构建并推到 GHCR（见 .github/workflows/docker.yml），
+# 镜像由 GitHub Actions 自动构建并推到 Docker Hub（见 .github/workflows/docker.yml），
 # NAS 上由 watchtower 自动拉新版。所以这个文件里的东西**直接决定线上跑什么**。
 #
 # 为什么代码要进镜像、而不是像原来那样挂一个 app 卷：

@@ -4,7 +4,7 @@
 #
 #   NAS_HOST=<你的 NAS 地址> NAS_USER=<用户> SSH_PORT=<SSH 端口> ./nas/update.sh
 #
-# 它只是拿 watchtower 的 --run-once 跑一遍：查 GHCR、有新镜像就重建容器。
+# 它只是拿 watchtower 的 --run-once 跑一遍：查 Docker Hub、有新镜像就重建容器。
 # 所以**就算 deploy 时用了 WATCHTOWER=no**（不想把 docker.sock 交给
 # 常驻容器），这个脚本照样能用 —— 它是一次性的，跑完就退。
 #
