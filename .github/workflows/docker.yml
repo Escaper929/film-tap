@@ -20,6 +20,11 @@ name: 构建镜像
 # Account settings → Personal access tokens 建，权限给 Read & Write 就够。
 # 少任何一个，登录那一步就会失败 —— 失败在这里是好事：宁可没有新镜像，
 # 也不要一个推不上去、NAS 又拉不到的空欢喜。
+#
+# 下面这些 action 一律取大版本标签，且都要求 runner ≥ v2.327.1 —— 它们的
+# 默认运行时是 Node 24（GitHub 托管的 ubuntu-latest 早就满足）。升大版本时
+# 留意 setup-node v5 起「有 packageManager 字段就自动开缓存」这条：这个仓库
+# 没有 package.json，所以不会触发。
 
 on:
   push:
@@ -43,9 +48,9 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -53,11 +58,11 @@ jobs:
       - name: 自检（结构 / 指纹 / 凭据护栏）
         run: node _selftest.js
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: 登录 Docker Hub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -67,7 +72,7 @@ jobs:
       # 否则坏镜像会先一步挂在可部署的标签上，watchtower 那一小时后就把它拉下来了。
       - name: 算标签（只出 sha）
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           flavor: |
@@ -78,7 +83,7 @@ jobs:
       - name: 构建并推送
         id: build
         if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -92,7 +97,7 @@ jobs:
       - name: 构建（仅本地，PR 用）
         id: build_local
         if: github.event_name == 'pull_request'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
