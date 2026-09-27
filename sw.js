@@ -1,55 +1,31 @@
-/* fetch 是「缓存优先」：命中就不再回源。所以**只要改了 SHELL 里的任何文件，
-   就必须把这个版本号 +1** —— 浏览器是靠字节比对发现 sw.js 变了才装新 SW 的，
-   新 SW 的 activate 会删掉旧 cache，页面才会拿到新版。
-   忘了改的后果：手机上永远停在旧版界面，而且不报任何错。
+/* 自毁用的 Service Worker —— 这个文件**故意什么都不缓存**。
 
-   光靠"记得改"是不够的（这个坑真踩过：改了 index.html 却没动 sw.js，
-   NAS 上的镜像明明是新版，手机上还是旧版）。所以下面再放一个 SHELL_FP ——
-   SHELL 里那些文件的内容指纹，`_selftest.js` 会算一遍比对。
-   对不上就自检失败，逼你改这一行；改了这一行 sw.js 的字节就变了，
-   浏览器才会去装新 SW。版本号和指纹两个都要动。
+   历史：早期形态是「页面可以直接双击打开、后端可选」，所以用 SW 做了离线可用：
+   预缓存 index.html / manifest，fetch 缓存优先，连不上时兜底返回缓存里的壳。
+   后来部署形态收敛成「页面和数据都由 NAS 上同一个进程发出来」，离线可用就从
+   优点变成了坏东西 —— 容器停了，反代明明返回 502，浏览器却照样从缓存里把页面
+   端出来，看起来一切正常。于是「服务挂了」这件事被藏起来，直到你点一个需要
+   联网的功能才发现。
 
-   ⚠️ 现在镜像由 watchtower 自动更新，这一条比以前**更要紧**：
-      更新是无人值守发生的，没人盯着“手机上是不是还是旧版”。 */
-const CACHE = "filmtap-v21";
-const SHELL = ["./", "./index.html", "./manifest.webmanifest"];
-/* SHA-256(index.html + "\n" + manifest.webmanifest)，按换行归一化后算。
-   算错不要紧：跑 `node _selftest.js` 会把正确的值打出来，照抄即可。 */
-const SHELL_FP = "d11d6dab8fb492afb48d489f792e0c880e6efd16aff6b835285a2d0b04de9042";
+   所以现在 index.html 末尾**不再注册** SW 了。但这个文件不能直接删：
+   已经装过旧 SW 的浏览器，在服务端不可用时根本取不到新的 sw.js，
+   会一直拿缓存里的旧壳继续跑，那个毛病会原样保留。
+   留着这个自毁版，等下一次**在服务端正常时**访问，它会被装上去 →
+   清空所有 cache → 注销自己。在那之后这个文件就再也用不到了。
 
-self.addEventListener("install", e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()).catch(() => {})
-  );
-});
+   它不注册任何 fetch 监听，所以永远不会拦截请求 —— 就算还控制着某个页面，
+   那个页面的请求也是直连网络的。 */
+
+self.addEventListener("install", () => self.skipWaiting());
 
 self.addEventListener("activate", e => {
-  e.waitUntil(
-    caches.keys()
-      .then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener("fetch", e => {
-  const req = e.request;
-  if (req.method !== "GET") return;
-  if (new URL(req.url).origin !== location.origin) return;
-  /* ⚠️ /api/ 一律进不了这一层。它是**数据**，不是壳 ——
-     被缓存住的话下次打开会拿到一份过期的数据；
-     更糟的是离线时下面那个 .catch 会把 index.html 当成接口的响应返回，
-     于是 fetch 拿到 200 + 一坨 HTML，页面以为「读成功了」。
-     两种都很难查。这个 SW 现在**只服务于自建后端这一种形态**
-     （页面和 /api/ 同一个进程发出），这一条比什么时候都关键。 */
-  if (new URL(req.url).pathname.indexOf("/api/") === 0) return;
-
-  e.respondWith(
-    caches.match(req).then(hit => hit || fetch(req).then(res => {
-      if (res && res.status === 200 && res.type === "basic") {
-        const copy = res.clone();
-        caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
-      }
-      return res;
-    }).catch(() => caches.match("./index.html")))
-  );
+  e.waitUntil((async () => {
+    /* 先清缓存再注销。反过来的话，注销之后这个 worker 可能随时被终止，
+       缓存就留在那儿了 —— 而留在那儿就等于「容器停了还能打开」。 */
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    } catch (_) {}
+    try { await self.registration.unregister(); } catch (_) {}
+  })());
 });

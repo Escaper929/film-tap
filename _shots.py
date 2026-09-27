@@ -47,14 +47,14 @@ VIEWS = [
      "+ 'Fuji 分装,3,120,2026-11,2026-08-01,45,防潮箱\\n'"
      "+ 'Adox CMS 20 II,2,,2030-01,,64,\\n'"
      ", '我的库存.csv')"),
-    # 自建 NAS 那一栏只在「页面是从自己的 NAS 打开的」时才展开，
-    # 而截图默认打的是本机静态服务器（探不到 /api/health）——
-    # 所以这里把探测结果**直接摆成探到了**再渲染：状态是注入的，排版是真的。
-    # 用 setTimeout 兜一下，避免和启动时那次异步探测（会把它改回 "no"）抢。
-    ("15-自建NAS未登录", "/?demo=1&c=m6",        "#/settings",    True,  None,
-     "setTimeout(() => { nasState='yes'; nasSess=false; render(true); }, 60);"),
+    # 「没连上服务端就不进应用」之后，这一屏成了整个应用的入口 ——
+    # 截图默认打的是本机静态服务器（探不到 /api/health），所以这里把
+    # gate 直接摆成 login 再渲染：状态是注入的，排版是真的。
+    # 用 setTimeout 兜一下，避免和启动时那次异步探测（会把它改回 offline）抢。
+    ("15-连接NAS入口",  "/?demo=1&c=m6",        "#/settings",    True,  None,
+     "setTimeout(() => { gate='login'; render(true); }, 60);"),
     ("16-自建NAS已连上", "/?demo=1&c=m6",        "#/settings",    True,  None,
-     "setTimeout(() => { nasState='yes'; nasSess=true;"
+     "setTimeout(() => { gate='ready'; nasState='yes'; nasSess=true;"
      " saveNas({at:'2026-09-27T07:30:00Z'}); render(true); }, 60);"),
 ]
 

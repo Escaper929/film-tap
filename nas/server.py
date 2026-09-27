@@ -991,8 +991,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
-        # ⚠️ 必须 no-cache：sw.js 就是靠**字节变化**来判断要不要装新 SW 的，
-        #    让中间层或浏览器缓存住它，线上就会停在一个旧版本上而且不报错。
+        # ⚠️ 必须 no-cache：页面是「容器活着才有」的东西 —— 容器停了、反代 502，
+        #    浏览器不该还能从自己的缓存里把这一屏端出来（那正是「服务挂了却
+        #    看起来一切正常」的来源）。每次都要回来问服务端一次。
         self.send_header("Cache-Control", "no-cache, must-revalidate")
         self.end_headers()
         if self.command != "HEAD":

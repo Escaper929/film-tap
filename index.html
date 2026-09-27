@@ -1442,8 +1442,8 @@ function renderSettings(db){
   h += '<h2>备份</h2>'
      + '<button class="btn" onclick="exportJSON()">导出备份（JSON）</button>'
      + '<button class="btn" onclick="importJSON()">导入备份</button>'
-     + '<div class="hint">数据默认只存在这台设备的浏览器里。换手机、清缓存之前先导一份出来。'
-     + '下面配了这台 NAS 或 WebDAV 的话，那两处也会各兜住一份。</div>';
+     + '<div class="hint">数据存在 NAS 上，本机只有一份镜像。导出是给「NAS 整个没了」'
+     + '兜底的，顺手做一次不亏。</div>';
 
   h += renderNasSection();
   h += renderObsidianSection();
@@ -1514,69 +1514,31 @@ function renderSettings(db){
   h += '<h2>危险操作</h2>'
      + '<button class="btn danger" onclick="wipe()">清空全部数据</button>';
 
-  h += '<div class="foot">film-tap · 数据全程留在本机<br>碰一下标签 › 编辑这卷 › 自动记天数和历史</div>';
+  h += '<div class="foot">film-tap · 数据存在你自己的 NAS 上<br>碰一下标签 › 编辑这卷 › 自动记天数和历史</div>';
   return h;
 }
 
 /* ── 自建 NAS 那一栏 ──
-   三种状态各一套排版：还没探到 / 不是从 NAS 打开的（整栏只留一句说明）/
-   探到了但没登录 / 已登录。 */
+   能翻到设置页就说明已经连上了（没连上会被 gate 挡在应用外面），
+   所以这里只剩「已连上」一种排版。旧版那三种状态（正在检测 / 不是从 NAS 打开的 /
+   输密码）都搬到 renderGate 去了 —— 它们现在是整个应用的入口，不再是一个小栏目。 */
 function renderNasSection(){
-  let h = '<h2>同步到这台 NAS（自建）</h2>';
-
-  if (nasState === "unknown"){
-    return h + '<div class="card" style="padding:16px 18px">'
-             + '<div style="font-size:14px;color:var(--ink-2)">正在检测这个页面是不是从 NAS 打开的…</div>'
-             + '</div>';
-  }
-
-  if (nasState === "no"){
-    return h + '<div class="card" style="padding:16px 18px">'
-             + '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
-             + '这一栏只在页面<b>从你自己的 NAS 打开</b>时才出现 —— '
-             + '它要的是同源的 <span class="mono">/api/</span>，由 NAS 上那个进程自己发出来。'
-             + '现在这个页面是从别处打开的，所以这里空着。<br>'
-             + '上面「导出备份」和下面两条同步路线不受影响。</div>'
-             + '</div>';
-  }
-
-  if (!nasSess){
-    h += '<div class="card" style="padding:16px 18px">';
-    h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
-       + '页面和数据都由 NAS 上同一个进程发出来，所以<b>没有跨域这回事</b> —— '
-       + '不用给反代补 CORS、不用管证书、也不用维护任何令牌。<br>'
-       + '这里只需要一个密码。之后登录态由<b>服务器下发</b>，'
-       + '而服务器下发的 cookie 不在浏览器「闲置 7 天清空本地存储」的范围内 —— '
-       + '所以本机被清空之后，下次打开会自动把数据拉回来，你一步都不用做。</div>';
-    h += '<label>密码</label>'
-       + '<input id="nas-pass" type="password" autocomplete="new-password" '
-       + 'oninput="syncNasLoginBtn()" placeholder="在 NAS 上设的那个密码">';
-    h += '<div class="hint">密码不保存在这个页面里 —— 只在按按钮那一次发给 NAS，'
-       + '之后靠服务器给的会话。所以<b>页面一旦刷新，这个框会清空</b>，得重新输一次。<br>'
-       + '改密码：在 NAS 上跑 <span class="mono">docker exec -it film-tap python3 /app/server.py --set-password</span>。</div>';
-    /* 空着就点不动 —— 不是为了防呆，是为了让「没输上」看得见：
-       一直亮着的话，点了只回一句「先输密码」，用户分不清是没输上还是功能坏了。 */
-    h += '<button class="btn primary" id="nas-login" disabled onclick="nasLogin()">连接</button>';
-    h += '</div>';
-    return h;
-  }
-
+  let h = '<h2>这台 NAS</h2>';
   const n = getNas();
   h += '<div class="card" style="padding:14px 16px;display:flex;align-items:center;gap:12px">';
   h += '<div style="min-width:0">'
-     + '<div style="font-size:15px;font-weight:500">已连上这台 NAS</div>'
+     + '<div style="font-size:15px;font-weight:500">已连上</div>'
      + '<div style="font-size:12.5px;color:var(--ink-3);margin-top:3px;word-break:break-all">'
-     + (n.at ? "上次同步 " + esc(nasAtText(n.at)) : "还没有同步过")
+     + (n.at ? "上次读取 " + esc(nasAtText(n.at)) : "还没有读取过")
      + '</div></div></div>';
 
   h += '<div class="row">'
      +   '<button class="btn primary" onclick="nasPush(false)">立即存到 NAS</button>'
-     +   '<button class="btn" onclick="nasPull()">从 NAS 恢复</button>'
+     +   '<button class="btn" onclick="nasPull()">重新读取</button>'
      + '</div>';
-  h += '<button class="btn' + (nasAuto() ? " primary" : "") + '" onclick="toggleNasAuto()">自动存到 NAS：'
-     +   (nasAuto() ? "已开启" : "已关闭") + '</button>';
-  h += '<div class="hint">关掉之后只有点「立即存到 NAS」才写过去。'
-     + '「本机为空时自动拉回」不受这个开关影响 —— 那是防数据丢失的底线。</div>';
+  h += '<div class="hint">改动会自动存过去（防抖 2 秒），这两个按钮是给「心里不踏实」用的。<br>'
+     + '数据存在 NAS 上，本机那份只是它的<b>镜像</b> —— 每次打开页面都会整份重新读一遍，'
+     + '所以本机不存在「另一份需要你去合并的数据」。</div>';
   h += '<button class="btn ghost" onclick="nasLogout()">断开连接</button>';
   return h;
 }
@@ -1996,11 +1958,21 @@ async function restoreFromNas(){
 const NAS_KEY = "filmtap.nas";   // { rev, at, auto } —— 只有这三样，**没有密码**
 const NAS_API = "/api/";         // 同源，所以是相对路径：换域名不用改代码
 
-/* 这个页面是不是跑在自建后端上：探一次 /api/health 就知道。
-   探不到（比如把这个文件直接拖进浏览器打开）就把整栏收起来，不留半个入口。 */
+/* 这个页面是不是跑在自建后端上：探一次 /api/health 就知道。 */
 let nasState = "unknown";        // unknown | yes | no
 let nasSess  = false;            // 会话是否有效（由服务器 cookie 决定）
 let nasTimer = null;
+
+/* ⚠️ 服务端是这个 App 的**唯一真源**，所以没连上就不进应用。
+   以前不是这样：先拿本机 localStorage 那份渲染出来，再跟 NAS 对齐 ——
+   于是容器停了、反代返回 502，页面照样能打开、数据照样在，看着一切正常。
+   现在启动必须走完「探活 → 会话 → 拉数据」三步，任何一步不成，
+   就停在下面这几种 gate 上，**绝不拿本机那份旧数据先顶上**。
+     loading → 正在连；offline → 连不上；login → 等密码；ready → 进应用 */
+let gate = "loading";
+
+/* ?demo=1 是给截图/预览用的：灌一份示例数据、直接渲染，不连服务端。 */
+let demoMode = false;
 
 function getNas(){
   try{
@@ -2014,7 +1986,6 @@ function saveNas(c){ try{ localStorage.setItem(NAS_KEY, JSON.stringify(c)); }cat
    客户端不带版本号时服务端会跳过「别处改过」这条判断，
    而真正要命的那条（拿空库覆盖服务端）服务端无条件拦。 */
 function nasRev(){ const c = getNas(); return typeof c.rev === "string" ? c.rev : null; }
-function nasAuto(){ const c = getNas(); return c.auto !== false; }   // 默认开：这是自己的盘，写过去很便宜
 function clearNasRev(){ const c = getNas(); delete c.rev; delete c.at; saveNas(c); }
 
 /* 一次调用包住所有失败：连不上、被拦、超时，对调用方都只是「没拿到」。
@@ -2048,17 +2019,17 @@ async function nasFetchData(){
   }catch(e){ return { error:"服务端返回了读不懂的内容" }; }
 }
 
-/* 「连接」按钮跟着密码框亮灭：一直亮着的话，点了只回一句「先输密码」，
+/* 「进入」按钮跟着密码框亮灭：一直亮着的话，点了只回一句「先输密码」，
    用户分不清是没输上还是功能坏了。 */
-function syncNasLoginBtn(){
-  const btn = $("#nas-login");
+function syncGateBtn(){
+  const btn = $("#gate-login");
   if (!btn) return;
-  const box = $("#nas-pass");
+  const box = $("#gate-pass");
   btn.disabled = ((box ? box.value : "")).replace(/\s+/g, "").length === 0;
 }
 
 async function nasLogin(){
-  const box   = $("#nas-pass");
+  const box   = $("#gate-pass");
   const typed = (box ? box.value : "").replace(/\s+/g, "");
   if (!typed){
     /* 光说「先输密码」等于没说：用户手里可能正拿着密码，只是没输进去
@@ -2077,7 +2048,7 @@ async function nasLogin(){
 
   /* ⚠️ 「密码错」和「连不上」必须分开说。混成一句「连不上」的话，
      用户会跑去查一个根本没坏的网络 —— 而这个项目正是从那类误判里长出来的。 */
-  if (!res){ toast("连不上服务端（页面能打开的话，多半是它刚刚重启）"); return; }
+  if (!res){ gate = "offline"; toast("连不上服务端了 —— 可能刚重启，重试一次"); render(true); return; }
 
   if (res.status === 401){
     /* 清空并把光标送回去：手机上留着上一次的错密码，
@@ -2093,14 +2064,14 @@ async function nasLogin(){
   if (box) box.value = "";        // 密码不许留在页面上，也不许进 localStorage
   nasSess = true;
   toast("已连上");
-  render(true);
-  return nasRehydrate().catch(()=>{});
+  return enterApp();
 }
 
 async function nasLogout(){
   await nasCall("logout", { method:"POST" });
   nasSess = false;
   clearNasRev();
+  gate = "login";                 // 断开就退回密码那一屏 —— 没连上就不进应用
   toast("已断开");
   render(true);
 }
@@ -2153,9 +2124,11 @@ async function nasPush(quiet, force){
   return false;
 }
 
-/* 变更后的自动上传。防抖 2 秒：连着改几处不会打成一串请求。 */
+/* 变更后的自动上传。防抖 2 秒：连着改几处不会打成一串请求。
+   这里**没有开关**：服务端是唯一真源，关掉自动上传就等于「改动只留在本机那份
+   镜像里，下次打开被服务端整份覆盖掉」—— 那是个静默丢数据的陷阱，不留这个口子。 */
 function scheduleNasPush(){
-  if (nasState !== "yes" || !nasSess || !nasAuto()) return;
+  if (nasState !== "yes" || !nasSess) return;
   clearTimeout(nasTimer);
   /* 把 promise return 出去只是为了可测：自检里要能 await 这次被安排的上传。 */
   nasTimer = setTimeout(()=>{ nasTimer = null; return nasPush(true).catch(()=>{}); }, 2000);
@@ -2167,66 +2140,103 @@ function flushNasPush(){
   }
 }
 
-/* 打开时回灌。两条硬规矩：
-   ① 只在**本机一台机身都没有**时才动手 —— 本机有数据时绝不覆盖，
-      否则会出现「刚记的机身被悄悄抹掉」；
-   ② 服务端也是空的就什么都不做。
-   差别只在触发条件：这条路不需要用户重填任何东西，
-   会话是服务器给的 cookie，它活过了那次存储清理。 */
-async function nasRehydrate(){
-  if (nasState !== "yes" || !nasSess) return false;
-  if (Object.keys(load().cameras).length) return false;
-
+/* 进应用之前，必须先把 NAS 上那份拿下来 —— 服务端是唯一真源，本机这份
+   localStorage 只是它的**镜像**，所以这里是整份覆盖，而不是「本机为空才拉」。
+   旧规矩「仅在本机为空时才动手」是给「本机也算一份真源」的形态用的；
+   现在本机不是真源了，那条规矩只会让一份旧数据活下来，正是要修的东西。 */
+async function enterApp(){
   const r = await nasFetchData();
   if (r.error){
-    if (r.error === "unauthorized"){ nasSess = false; render(true); }
-    return false;
+    if (r.error === "unauthorized"){ nasSess = false; gate = "login"; render(true); return false; }
+    gate = "offline"; render(true); return false;
   }
-  const c = getNas();
-  if (r.rev) c.rev = r.rev;              // 版本号即使没数据也要记住，否则第一次上传会被判成「别处改过」
-  if (!r.data){
-    if (r.rev) saveNas(c);
-    return false;
-  }
-  const n = Object.keys(r.data.cameras || {}).length;
-  if (!n){ if (r.rev) saveNas(c); return false; }
 
+  const c = getNas();
+  if (r.rev) c.rev = r.rev;      // 版本号即使没数据也要记住，否则第一次上传会被判成「别处改过」
   c.at = new Date().toISOString();
   saveNas(c);
-  save(normalize(r.data));
+
+  /* 服务端还是空的、本机却有数据 —— 只可能是「本机这份从没上去过」
+     （比如从早期纯浏览器形态迁过来）。这时把它推上去，而不是拿空库盖掉它。 */
+  const remoteEmpty = !r.data || !Object.keys(r.data.cameras || {}).length;
+  if (remoteEmpty && Object.keys(load().cameras).length){
+    gate = "ready";
+    syncArmed = true;
+    render(true);
+    nasPush(true).catch(()=>{});
+    return true;
+  }
+
+  syncArmed = false;                 // 下面这次 save 是「装载镜像」，不该触发上传
+  save(normalize(r.data || blank()));
   clearTimeout(nasTimer); nasTimer = null;   // 刚拉回来的这份不用再打回去
+  syncArmed = true;
+  gate = "ready";
   render(true);
-  toast("已从 NAS 恢复 " + n + " 台机身");
   return true;
 }
 
-/* 手动拉取。这条会覆盖本机，所以只要有数据就必须先确认。 */
-async function nasPull(){
-  if (nasState !== "yes"){ toast("这个页面不是从 NAS 打开的"); return; }
-  if (!nasSess){ toast("先在上面连接一次"); return; }
+/* 启动：探活 → 会话 → 拉数据。三步里任何一步不成，都停在 gate 上。 */
+async function boot(){
+  if (demoMode){ gate = "ready"; render(true); return; }
 
-  toast("读取中…");
-  const r = await nasFetchData();
-  if (r.error){
-    toast(r.error === "unauthorized" ? "连接已失效，重新输一次密码" : r.error);
-    if (r.error === "unauthorized"){ nasSess = false; render(true); }
-    return;
+  gate = "loading"; render(true);
+
+  nasState = (await nasHealth()) ? "yes" : "no";
+  if (nasState !== "yes"){ gate = "offline"; render(true); return; }
+
+  /* /api/session 回的是 200 + {"ok":false} 而不是 401 ——
+     「现在是谁」的答案可以是「没人」，那不是错误。这样未登录打开页面时
+     控制台不会多出一条红色，把真正的报错淹掉。 */
+  const res = await nasCall("session", { headers:{ "Accept":"application/json" } });
+  let j = null;
+  try{ j = res ? await res.json() : null; }catch(e){}
+  nasSess = !!(j && j.ok === true);
+  if (!nasSess){ gate = "login"; render(true); return; }
+
+  await enterApp();
+}
+function retryBoot(){ boot().catch(()=>{ gate = "offline"; render(true); }); }
+
+/* 没进应用之前显示的那几屏。排版刻意和 App 内页一致 ——
+   免得看起来像「浏览器出错了」，而不是「App 在等 NAS」。 */
+function renderGate(){
+  if (gate === "loading"){
+    return '<div class="card" style="padding:20px 18px;text-align:center">'
+         + '<div style="font-size:15px;color:var(--ink-2)">正在连接 NAS…</div>'
+         + '</div>';
   }
-  if (!r.data){ toast("NAS 上还没有数据"); return; }
+  if (gate === "offline"){
+    return '<h1>连不上服务端</h1>'
+         + '<div class="card" style="padding:18px 18px">'
+         + '<div style="font-size:14px;color:var(--ink-2);line-height:1.8">'
+         + '页面和数据都由 NAS 上那个进程发出来，连不上就没有数据可看 —— '
+         + '所以这里<b>不会拿本机的一份旧数据先顶上</b>。<br><br>'
+         + '常见原因：容器没在跑（<span class="mono">docker ps</span> 看 film-tap 是不是 Up）、'
+         + '反代没起来、或者地址和端口不对。'
+         + '</div>'
+         + '<button class="btn primary" onclick="retryBoot()">重试</button>'
+         + '</div>';
+  }
+  return '<h1>连接这台 NAS</h1>'
+       + '<div class="card" style="padding:18px 18px">'
+       + '<div style="font-size:14px;color:var(--ink-2);line-height:1.8">'
+       + '数据存在 NAS 上，输入一次密码就能进去。登录态由服务器下发，'
+       + '本机存储被清空也不用重填。'
+       + '</div>'
+       + '<label>密码</label>'
+       + '<input id="gate-pass" type="password" autocomplete="current-password" '
+       + 'oninput="syncGateBtn()" placeholder="在 NAS 上设的那个密码">'
+       + '<button class="btn primary" id="gate-login" disabled onclick="nasLogin()">进入</button>'
+       + '</div>';
+}
 
-  const localN  = Object.keys(load().cameras).length;
-  const remoteN = Object.keys(r.data.cameras || {}).length;
-  if (localN > 0 && !confirm("本机已有 " + localN + " 台机身，NAS 上有 " + remoteN + " 台。\n\n"
-      + "继续会用 NAS 的版本覆盖本机数据，确定吗？")) return;
-
-  const c = getNas();
-  if (r.rev) c.rev = r.rev;
-  c.at = new Date().toISOString();
-  saveNas(c);
-  save(normalize(r.data));
-  clearTimeout(nasTimer); nasTimer = null;
-  toast("已从 NAS 恢复 " + remoteN + " 台机身");
-  go("#/");
+/* 重新从 NAS 读一次。服务端是唯一真源，本机只是它的镜像 ——
+   所以覆盖本机不需要再问一次（旧版会问，那是因为本机也算一份真源）。 */
+async function nasPull(){
+  if (nasState !== "yes"){ toast("还没连上 NAS"); return; }
+  toast("读取中…");
+  if (await enterApp()) toast("已从 NAS 重新读取");
 }
 
 /* ══════════ 从 Obsidian 同步 ══════════
@@ -2349,31 +2359,6 @@ async function obsSync(){
   toast(r.body.message || (r.body.ok ? "已同步" : "没有同步"));
 }
 
-function toggleNasAuto(){
-  const c = getNas();
-  c.auto = !(c.auto !== false);
-  saveNas(c);
-  toast(c.auto ? "已开启自动存到 NAS" : "已关闭自动存到 NAS");
-  render(true);
-}
-
-/* 启动时探一次。失败即「这个页面不在 NAS 上」，整栏收起。 */
-async function nasBoot(){
-  const h = await nasHealth();
-  nasState = h ? "yes" : "no";
-  if (h && h.configured){
-    /* /api/session 回的是 200 + {"ok":false} 而不是 401 ——
-       「现在是谁」的答案可以是「没人」，那不是错误。这样未登录打开页面时
-       控制台不会多出一条红色，把真正的报错淹掉。 */
-    const res = await nasCall("session", { headers:{ "Accept":"application/json" } });
-    let j = null;
-    try{ j = res ? await res.json() : null; }catch(e){}
-    nasSess = !!(j && j.ok === true);
-    if (nasSess) await nasRehydrate();
-  }
-  render(true);
-}
-
 function exportJSON(){
   const db = load();
   const blob = new Blob([JSON.stringify(db, null, 2)], { type:"application/json" });
@@ -2432,9 +2417,17 @@ function wipe(){
 
 function render(keepScroll){
   const y = keepScroll ? window.scrollY : 0;
+  const app = $("#app");
+  /* 没连上服务端就不进应用 —— 见 gate 的说明。这一层必须挡在最前面：
+     只要还剩一条路能把 App 画出来，就又能出现「容器停了、页面还正常」那种假象。 */
+  if (gate !== "ready"){
+    app.innerHTML = renderGate();
+    if (gate === "login") syncGateBtn();
+    window.scrollTo(0, y);
+    return;
+  }
   const r = parseRoute();
   const db = load();
-  const app = $("#app");
   if (r.view === "home")     app.innerHTML = renderHome(db);
   else if (r.view === "cam") app.innerHTML = renderCam(db, r.id);
   else if (r.view === "setup") app.innerHTML = renderSetup(db, r.id, true);
@@ -2456,19 +2449,21 @@ window.addEventListener("hashchange", render);
 (function bootDemo(){
   const q = new URLSearchParams(location.search);
   if (q.get("demo") !== "1") return;
+  demoMode = true;
   if (!Object.keys(load().cameras).length) save(demoData());
+  gate = "ready";                         // 预览模式不连服务端，直接渲染
   if (q.get("c")) return;                 // 有 c 参数就交给 parseRoute
   history.replaceState(null, "", location.pathname + "#/");
 })();
 
+/* 首屏：gate 还是 loading，所以这里画出来的是「正在连接 NAS…」。
+   syncArmed 全程保持 false —— 启动过程中会有几次 save()（灌示例数据、装载镜像），
+   那些都不是用户改的数据，不该触发上传。等 boot() 把服务端那份装好才打开。 */
 render();
 
-/* 到这里为止发生的 save() 都属于启动过程（灌示例数据），不该触发上传。
-   过了这一步才认为「用户动了数据」，允许自动同步。 */
-syncArmed = true;
-/* 自建 NAS：先探「这个页面是不是从 NAS 打开的」，是的话接上会话、
-   本机为空就自动回灌。整条路都在 .catch 里 —— 探不到就是个正常的空结果。 */
-nasBoot().catch(()=>{});
+/* 启动必走完「探活 → 会话 → 拉数据」。任何一步不成都停在 gate 上，
+   不拿本机那份旧数据顶上 —— 这正是这次改动的全部要点。 */
+boot().catch(()=>{ gate = "offline"; render(true); });
 
 /* 页面切走 / 被关掉时，把还在防抖窗口里的那次上传立刻发掉，
    免得「改完就锁屏」把这次改动丢掉。 */
@@ -2488,8 +2483,17 @@ window.addEventListener("keydown", e => {
   if (typeof t.click === "function") t.click();
 });
 
-if ("serviceWorker" in navigator && location.protocol === "https:"){
-  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(()=>{}));
+/* 不再注册 Service Worker —— 页面必须联网才能打开，这是这次改动的一半
+   （另一半是 render() 开头那道 gate）。这里反而要把**已经装过**的旧 SW 清掉：
+   清缓存 + 注销。双保险 —— 新装的 sw.js 自己也会自毁（见该文件开头的说明），
+   这一条是给「旧 SW 还控制着当前这一屏、它的自毁版本还没装上」兜底：
+   缓存一清，旧 SW 那个「连不上就返回缓存里的壳」的兜底就再也拿不到东西了。 */
+if ("serviceWorker" in navigator){
+  navigator.serviceWorker.getRegistrations()
+    .then(rs => rs.forEach(r => r.unregister())).catch(()=>{});
+}
+if (window.caches && caches.keys){
+  caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(()=>{});
 }
 </script>
 </body>

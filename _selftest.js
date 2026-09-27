@@ -131,6 +131,12 @@ global.fetch = () => Promise.reject(new Error("测试里没有打桩 fetch"));
 const driver = String.raw`
 save(demoData());
 
+/* 下面这些用例测的是「已经连上服务端之后」的界面，所以直接把 gate 摆到 ready。
+   真实的启动路径（探活 → 会话 → 拉数据）由「没连上服务端就不进应用」那一条
+   单独钉住 —— 那一条会把 gate 从 loading 一路走到 ready，这里不重复走网络。
+   不摆的话，render() 会把每一屏都画成「正在连接 NAS…」，所有界面断言一起挂。 */
+gate = "ready";
+
 const CASES = [
   { name:"机库首页",    search:"",       hash:"#/",
     must:["Leica M6","尼康 FM2","奥林巴斯 XA2","禄来 3.5F","214 天","示例数据","36 张"],
@@ -166,7 +172,7 @@ const CASES = [
     mustNot:["累计快门"] },
   { name:"设置与备份",  search:"",       hash:"#/settings",
     must:["导出备份","导入备份","已登记的机身 ID","?c=","清空全部数据",
-          "同步到这台 NAS",
+          "这台 NAS","立即存到 NAS","重新读取","断开连接",
           "同步到 WebDAV","WebDAV 目录地址","保存同步设置"],
     /* GitHub 那整套已经拆掉了。下面头几个 mustNot 是**防它偷偷长回来**：
        页面里再冒出任何一个 GitHub 相关的字眼，都说明有残留没摘干净。
@@ -615,8 +621,10 @@ try {
     "saveDavFromForm","syncToNas","restoreFromNas","testDav","clearDavSettings",
     /* 自建 NAS 那一栏的按钮。这张表必须跟着渲染出来的 onclick 一起长 ——
        名字漏了一个，被测的那段 JS 就会去全局找真的实现而找不到，于是报「有泄漏」。
-       那个失败看着像注入，其实是这张表过期了，纯噪音。 */
-    "nasLogin","nasLogout","nasPush","nasPull","toggleNasAuto","syncNasLoginBtn",
+       那个失败看着像注入，其实是这张表过期了，纯噪音。
+       gate 那一屏上的两个（输密码 / 重试）也要在这儿：它们现在是应用的入口，
+       哪天有人把某个视图直接画在 gate 上，这条断言要能一起管住。 */
+    "nasLogin","nasLogout","nasPush","nasPull","syncGateBtn","retryBoot",
     "obsPreview","obsSync",
     "wipe","exportCorrupt",
     "dropCorrupt","deleteFilm","saveFilm","updatePP","document"];
@@ -865,35 +873,37 @@ try {
         "/" + BAD_SAMPLES.length + " 不误报=" + quiet);
 } catch (e) { check("凭据护栏有效", false, "抛异常 " + e.message); }
 
-/* ── Service Worker 缓存版本 ──
-   改了 shell 里的文件（最常改的就是 index.html）却忘了动 sw.js，
-   浏览器就不会装新 SW —— 它靠 sw.js 的**字节**变化来判断要不要更新。
-   结果是线上明明是新版，手机却一直吃旧缓存里的老页面，而且**不报任何错**。
-   这个坑真踩过（改完 index.html 直接推，忘了动 sw.js）。
+/* ── 没有离线缓存：容器停了，页面就该打不开 ──
+   历史：早期形态是「页面能直接双击打开、后端可选」，所以用 SW 做了离线可用 ——
+   预缓存外壳、fetch 缓存优先、连不上时兜底返回缓存里的壳。
+   部署形态收敛成「页面和数据都由 NAS 上同一个进程发出来」之后，离线可用就从
+   优点变成了坏东西：容器停了、反代明明返回 502，浏览器照样从缓存里把页面端出来，
+   看起来一切正常 —— 服务挂了这件事被藏起来，直到你点一个要联网的功能才发现。
 
-   光靠"记得改"守不住，所以把 shell 内容的指纹写进 sw.js 里，这里算一遍比对：
-   对不上就自检失败，逼着人去改 sw.js 那一行 —— 而那一行一改，
-   sw.js 的字节就变了，浏览器才终于会去装新 SW。 */
+   所以这条断言是**反着钉**的：不注册 SW、不写缓存，而且已经装过旧 SW 的浏览器
+   必须被清掉（清缓存 + 注销）。旧版这里比的是 SHELL_FP 指纹，逼人「改了
+   index.html 记得同步 sw.js」—— 现在没有缓存要同步了，那条门整个撤掉。 */
 try {
-  const crypto = require("crypto");
   const swText = fs.readFileSync(path.join(__dirname, "sw.js"), "utf8");
-  const norm = s => s.replace(/\r\n/g, "\n");   // 换行归一化，免得换台机器就误报
-  const shell = ["index.html", "manifest.webmanifest"]
-        .map(f => norm(fs.readFileSync(path.join(__dirname, f), "utf8"))).join("\n");
-  const fp = crypto.createHash("sha256").update(shell, "utf8").digest("hex");
+  /* sw.js 不许有任何缓存能力：不开 cache、不监听 fetch。 */
+  const swNoCache  = !/caches\.open/.test(swText) &&
+                     !/addEventListener\(\s*["']fetch["']/.test(swText);
+  /* 但它必须会自毁 —— 否则已经装过旧 SW 的浏览器永远吃缓存里那份旧壳。 */
+  const swSuicide  = /caches\.delete/.test(swText) && /unregister/.test(swText);
 
-  const mC   = swText.match(/const\s+CACHE\s*=\s*"([^"]+)"/);
-  const mF   = swText.match(/const\s+SHELL_FP\s*=\s*"([^"]+)"/);
-  const got  = mF ? mF[1] : "";
-  const ver  = mC ? mC[1] : "";
-  const okVer = /-v\d+$/.test(ver);
+  /* 页面这边：不注册新 SW，且主动清掉旧的（清缓存 + 注销）。 */
+  const noRegister = !/serviceWorker\.register/.test(js);
+  const pageSweeps = /getRegistrations/.test(js) &&
+                     /unregister\(\)/.test(js) &&
+                     /caches\.delete/.test(js);
+  const pageNoCache = !/caches\.open/.test(js);
 
-  check("SW 缓存版本同步", fp === got && okVer,
-        fp === got
-          ? "指纹一致 版本号=" + ver
-          : "对不上 —— 改了 shell 文件但没同步 sw.js。"
-            + "把 sw.js 里的 SHELL_FP 换成 " + fp + "，CACHE 版本号 +1");
-} catch (e) { check("SW 缓存版本同步", false, "抛异常 " + e.message); }
+  check("没有离线缓存（容器停=打不开）",
+        swNoCache && swSuicide && noRegister && pageSweeps && pageNoCache,
+        "sw.js 不缓存=" + swNoCache + " sw.js 自毁=" + swSuicide +
+        " 页面不再注册=" + noRegister + " 页面清旧缓存并注销=" + pageSweeps +
+        " 页面不写缓存=" + pageNoCache);
+} catch (e) { check("没有离线缓存（容器停=打不开）", false, "抛异常 " + e.message); }
 
 /* ══════════════════════════════════════════════════════════
    同步层的通用行为 —— 和具体走哪条路无关，所以放在异步段里用打桩的 fetch 跑。
@@ -1089,22 +1099,25 @@ try {
 
       /* ── ② 「密码错」必须和「连不上」分开说 ──
          混成一句「连不上」的话，用户会跑去查一个根本没坏的网络 ——
-         这个项目上一轮就是在修这类误判。 */
+         这个项目上一轮就是在修这类误判。
+         密码框现在在 gate 那一屏上（整个应用的入口），不再是设置页的一个小栏目。 */
       localStorage.removeItem(NAS_KEY);
       nasSess = false; nasState = "yes";
-      __setValue("#nas-pass", "wrong-" + "password");
+      gate = "login";
+      __setValue("#gate-pass", "wrong-" + "password");
       await nasLogin();
       const tBad = __el("#toast").textContent;
       const saysWrong  = /密码不对/.test(tBad);
       const notNetwork = !/连不上/.test(tBad);
 
       /* ── ③ 密码绝不许落盘 ── */
-      __setValue("#nas-pass", NPW);
+      gate = "login";
+      __setValue("#gate-pass", NPW);
       await nasLogin();
       const dumped = JSON.stringify(localStorage.getItem(NAS_KEY) || "");
       const noPwOnDisk = dumped.indexOf(NPW) < 0;
       const sessOn     = nasSess === true;
-      const boxCleared = __el("#nas-pass").value === "";
+      const boxCleared = __el("#gate-pass").value === "";
       check("NAS：密码错≠连不上，也不落盘",
             saysWrong && notNetwork && noPwOnDisk && sessOn && boxCleared,
             "说密码不对=" + saysWrong + " 没混成网络问题=" + notNetwork +
@@ -1120,24 +1133,28 @@ try {
             bad.length ? ("有 " + bad.length + " 个请求不对：" + bad[0].path)
                        : (NCALLS.length + " 个请求全部是 /api/ 相对路径 + same-origin"));
 
-      /* ── ⑤ 回灌的两条硬规矩：只在**本机为空**时动手，本机有数据一个请求都不发 ── */
+      /* ── ⑤ 服务端是唯一真源：进应用时**整份覆盖**本机那份镜像 ──
+         旧规矩是「只在本机为空时才拉」，那是给「本机也算一份真源」的形态用的。
+         现在本机只是镜像 —— 留着旧规矩，一份旧数据就会活下来，
+         而那份旧数据正是「容器停了、页面还能显示东西」的来源。 */
       NST.data = { version:2, cameras:{
         r1:{ id:"r1", name:"NAS 上的机身 禄来 3.5F", format:"120", loaded:null, history:[] }
       }, films:{} };
       NST.rev = "rev-1";
+      /* 本机先放一台**服务端上没有**的机身 —— 覆盖如果没发生，它会活下来。 */
       localStorage.removeItem("filmtap.v1");
+      save({ version:2, cameras:{
+        stale:{ id:"stale", name:"本机残留的旧机身", format:"135", loaded:null, history:[] }
+      }, films:{} });
       localStorage.removeItem(NAS_KEY);
 
       NCALLS.length = 0;
-      const back = await nasRehydrate();
-      const gotBack = Object.keys(load().cameras).length === 1 &&
-                      load().cameras.r1.name === "NAS 上的机身 禄来 3.5F";
-
-      NCALLS.length = 0;
-      const again = await nasRehydrate();          // 本机已有数据
-      check("NAS：回灌仅在本机为空时",
-            back === true && gotBack && again === false && NCALLS.length === 0,
-            "拉回来=" + gotBack + " 本机有数据时不请求=" + (NCALLS.length === 0));
+      const back = await enterApp();
+      const replaced = Object.keys(load().cameras).length === 1 &&
+                       load().cameras.r1.name === "NAS 上的机身 禄来 3.5F";
+      check("NAS：进应用时整份覆盖本机镜像",
+            back === true && replaced,
+            "读回来了=" + back + " 本机旧机身已被覆盖=" + replaced);
 
       /* ── ⑥ 上传：带上「我上次读到的版本」，服务端据此判断别处有没有改过 ── */
       NCALLS.length = 0;
@@ -1178,7 +1195,7 @@ try {
       /* ── ⑨ 这是整条路的重点：**本机被清空之后，用户一步都不用做** ──
          模拟 Safari 闲置清理：数据和一些本机偏好都没了，
          但会话是服务器下发的 cookie —— 它不在那次清理范围内，还在。
-         重跑一次启动路径，数据应该自己回来。 */
+         重跑一次启动路径（boot），数据应该自己回来。 */
       NST.sess = true;
       NST.data = { version:2, cameras:{
         r1:{ id:"r1", name:"NAS 上的机身 禄来 3.5F", format:"120", loaded:null, history:[] },
@@ -1189,59 +1206,93 @@ try {
       localStorage.removeItem(NAS_KEY);
       nasState = "unknown"; nasSess = false;
 
-      await nasBoot();
+      await boot();
+      __setLoc("", "#/"); render();
       const healed = Object.keys(load().cameras).length === 2;
-      const saidIt = /已从 NAS 恢复 2 台机身/.test(__el("#toast").textContent);
+      const straight = gate === "ready" &&
+                       __app().indexOf("NAS 上的机身 Leica M6") >= 0;
       check("NAS：清空后自动恢复",
-            healed && saidIt && nasSess === true,
-            "数据自己回来=" + healed + " 提示说清台数=" + saidIt + " 会话还活着=" + (nasSess === true));
+            healed && straight && nasSess === true,
+            "数据自己回来=" + healed + " 直接进应用=" + straight +
+            " 会话还活着=" + (nasSess === true));
 
-      /* ── ⑩ 设置页那一栏的排版，以及「空着就点不动」 ── */
+      /* ── ⑩ 设置页那一栏：只剩「已连上」一种排版 ──
+         旧版那三种状态（正在检测 / 不是从 NAS 打开的 / 输密码）都搬到 gate 去了 ——
+         它们现在是整个应用的入口，不再是一个小栏目。所以这一栏里
+         不该再有密码框，也不该出现明文密码。 */
       __setLoc("", "#/settings");
-      nasState = "yes"; nasSess = false;
-      render();
-      let h = __app();
-      const showPass = h.indexOf('id="nas-pass"') >= 0;
-      const startOff = h.indexOf('id="nas-login" disabled') >= 0;
-      const wired    = h.indexOf('oninput="syncNasLoginBtn()"') >= 0;
-
-      __setValue("#nas-pass", "");
-      syncNasLoginBtn();
-      const emptyOff = __el("#nas-login").disabled === true;
-      __setValue("#nas-pass", "   \n ");
-      syncNasLoginBtn();
-      const blankOff = __el("#nas-login").disabled === true;   // 纯空白不算内容
-      __setValue("#nas-pass", "x");
-      syncNasLoginBtn();
-      const lightsUp = __el("#nas-login").disabled === false;
-
-      nasSess = true;
+      gate = "ready";
+      nasState = "yes"; nasSess = true;
       saveNas({ at:"2026-09-27T07:30:00Z" });
       render();
-      h = __app();
-      const loggedIn = h.indexOf("立即存到 NAS") >= 0 && h.indexOf("从 NAS 恢复") >= 0;
-      const showsAt  = h.indexOf("2026-09-27 07:30 UTC") >= 0;
-      const stillNoPw = h.indexOf(NPW) < 0;
-      check("NAS：设置页排版与按钮",
-            showPass && startOff && wired && emptyOff && blankOff && lightsUp &&
-            loggedIn && showsAt && stillNoPw,
-            "密码框=" + showPass + " 初始禁用=" + startOff + " 空着不亮=" + emptyOff +
-            " 纯空白不算=" + blankOff + " 输了就亮=" + lightsUp +
-            " 已登录排版=" + loggedIn + " 显示上次同步=" + showsAt + " 页面无密码=" + stillNoPw);
+      let h = __app();
+      const nasRow  = h.indexOf("这台 NAS") >= 0 && h.indexOf("已连上") >= 0;
+      const wired   = h.indexOf('onclick="nasPush(false)"') >= 0 &&
+                      h.indexOf('onclick="nasPull()"') >= 0 &&
+                      h.indexOf('onclick="nasLogout()"') >= 0;
+      const showsAt = h.indexOf("2026-09-27 07:30 UTC") >= 0;
+      const noPwHere = h.indexOf('id="gate-pass"') < 0 && h.indexOf(NPW) < 0;
+      check("NAS：设置页那一栏",
+            nasRow && wired && showsAt && noPwHere,
+            "已连上排版=" + nasRow + " 三个按钮都在=" + wired +
+            " 显示上次读取=" + showsAt + " 页面上没有密码框=" + noPwHere);
 
-      /* ── ⑪ 不是从 NAS 打开时，整栏收起，不留半个入口 ── */
-      nasState = "no"; nasSess = false;
+      /* ── ⑪ 这次改动的正题：**没连上服务端就不进应用** ──
+         容器停了、反代返回 502 的时候，页面不能拿本机那份旧数据顶上 ——
+         那正是「服务挂了却看起来一切正常」的来源。
+         启动路径要依次走过三段 gate：连不上 → offline；连上了没登录 → login；
+         登录了 → ready。每一段都钉住「本机的旧机身一个都不许出现」。 */
+      localStorage.removeItem("filmtap.v1");
+      save({ version:2, cameras:{
+        ghost:{ id:"ghost", name:"本机那份旧数据", format:"135", loaded:null, history:[] }
+      }, films:{} });
+      __setLoc("", "#/");
+
+      /* ① 探活就失败 → offline，界面上一个机身名都不许出现 */
+      nasState = "unknown"; nasSess = false; NST.noApp = true;
+      await boot();
       render();
-      h = __app();
-      const collapsed = h.indexOf("只在页面") >= 0 && h.indexOf('id="nas-login"') < 0 &&
-                        h.indexOf('id="nas-pass"') < 0;
-      check("NAS：不在 NAS 上时收起", collapsed,
-            collapsed ? "只留一句说明，没有密码框和按钮" : "还留了入口");
+      const offH = __app();
+      const offOk = gate === "offline" &&
+                    offH.indexOf("连不上服务端") >= 0 &&
+                    offH.indexOf("本机那份旧数据") < 0;
+      NST.noApp = false;
+
+      /* ② 后端在、但没登录 → login，只给一个密码框 */
+      NST.sess = false;
+      nasState = "unknown"; nasSess = false;
+      await boot();
+      render();
+      const loginH = __app();
+      const loginOk = gate === "login" &&
+                      loginH.indexOf('id="gate-pass"') >= 0 &&
+                      loginH.indexOf("本机那份旧数据") < 0;
+
+      /* ③ 登录之后才进应用，而且进去的是服务端那一份 */
+      NST.data = { version:2, cameras:{
+        r1:{ id:"r1", name:"NAS 上的机身 禄来 3.5F", format:"120", loaded:null, history:[] }
+      }, films:{} };
+      NST.rev = "rev-3"; NST.sess = true;
+      nasState = "unknown"; nasSess = false;
+      await boot();
+      render();
+      const readyH = __app();
+      const readyOk = gate === "ready" &&
+                      readyH.indexOf("NAS 上的机身 禄来 3.5F") >= 0 &&
+                      readyH.indexOf("本机那份旧数据") < 0;
+
+      check("没连上服务端就不进应用", offOk && loginOk && readyOk,
+            "连不上=offline=" + offOk + " 未登录=login=" + loginOk +
+            " 登录后进应用=" + readyOk);
 
       /* ── ⑫ Obsidian 那一栏：也只有「已连上 NAS」时才出现。
          它做的事全在服务端（读 NAS 上那份笔记），所以没连上时整栏收起，
          而不是放一个点不动的按钮。两个按钮的名字都要在这张 PARAMS 表里，
          否则上面那条「不能逃出 onclick」会把它误报成注入。 ── */
+      /* ⚠️ 这一栏长在设置页上，得先把路由拨过去 —— ⑪ 把路由留在了首页，
+         少了这一句就永远看不到它，测试会假报「已登录=false」。 */
+      __setLoc("", "#/settings");
+      gate = "ready";
       nasState = "yes"; nasSess = true;
       render();
       h = __app();

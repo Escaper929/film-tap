@@ -3,30 +3,30 @@
 """从零跑一遍首次使用路径 —— 在**真实部署的页面上**点，不是在内存里造数据。
 
 为什么单独有这么一个文件：`_selftest.js` 是直接 `save(demoData())` + 直接跳哈希，
-从来不点按钮、不进表单、不经过 Service Worker。于是「空库 → 登记第一台机身 →
+从来不点按钮、不进表单、不经过网络。于是「过登录 gate → 空库 → 登记第一台机身 →
 装卷 → 刷新 → 数据还在」这条**每个新用户唯一会走的**路径，在自检里是完全空白的。
-这个脚本专门补它，同时顺带验证线上拿到的确实是新版（SW 有没有同步）。
+这个脚本专门补它，同时顺带验证线上拿到的确实是新版。
+
+⚠️ **必须打一个真的在跑的后端**（NAS 上那个容器）。页面和数据都由那个进程发出来，
+没连上就停在「连不上服务端」那一屏，后面一条都测不到 —— 本机静态服务器已经
+不是这个脚本的用法了（想看界面用 `?demo=1`，见 _shots.py）。
+后端设过密码的话，把密码放进 `FT_PASSWORD`，脚本会自己过登录那一屏。
 
 地址必须显式给（命令行参数或 FT_URL 环境变量）—— 脚本里不写死任何部署地址：
 仓库是公开的，写进去就等于把自己的部署位置一起公开出去。
 
 建议打真实部署（NAS 上跑着容器的那个）而不是本地。之所以不默认打本地：
 「本地跑通」和「线上生效」是两件事 ——
-- 本地过、线上没过 → sw.js 忘了动，手机还在吃旧缓存
+- 本地过、线上没过 → 线上拿到的还是旧镜像
 - 线上过、本地没过 → 基本不可能，但也能立刻看出来
 
 用法（注意解释器：playwright 装在工程 venv 里，系统 python3 没有）：
 
     PY=/path/to/your/venv/bin/python            # 换成你自己的 venv 路径
-    $PY _firstrun.py https://<你的域名>/          # 线上那个部署
-    $PY _firstrun.py http://127.0.0.1:8123      # 本地静态服务
-    FT_URL=https://<你的域名>/ $PY _firstrun.py  # 也可以走环境变量
+    FT_PASSWORD=<你的密码> $PY _firstrun.py https://<你的域名>/
+    FT_URL=https://<你的域名>/ FT_PASSWORD=<你的密码> $PY _firstrun.py
 
-拿本地静态服务跑时，设置页的 NAS 那一栏会正确地收到「这一页不是从 NAS
-打开的」—— 那个情况下跟 NAS 有关的那几条会自动跳过，不算失败。
-
-直接敲 `python _firstrun.py` 会报 ModuleNotFoundError: playwright —— 那不是
-脚本坏了，是解释器选错了。上面那个 venv 才是装了 playwright 的那个。
+没给密码而页面又停在登录那一屏时，脚本会说明原因并以码 2 退出 —— 那不是脚本坏了。
 
 退出码非 0 = 有失败项或有 JS 报错（2 = 没给部署地址）。需要 playwright（用本机已装的 Edge，
 不额外下载内核，跟 _shots.py 一致）。
@@ -88,9 +88,33 @@ with sync_playwright() as p:
     # 空库第一次点「登记第一台机身」会弹原生 prompt
     page.on("dialog", lambda d: d.accept("我的第一台"))
 
-    # ── ① 空状态 ──
+    # ── ⓪ 入口 gate：没连上服务端就不进应用 ──
+    # 页面和数据都由 NAS 上那个进程发出来，所以第一屏可能是三种之一：
+    # 「正在连接」→ 连不上（offline）、等密码（login）、或者直接进应用。
+    # 这一关必须先过，后面才看得到应用 —— 它本身也是这次改动最该被验的一条。
     page.goto(BASE + "/", wait_until="load")
-    page.wait_for_timeout(600)
+    page.wait_for_timeout(900)
+    h = app(page)
+    if "连不上服务端" in h:
+        print("连不上服务端 —— 容器没在跑，或者地址/端口不对：%s" % BASE)
+        sys.exit(2)
+    if "连接这台 NAS" in h:
+        pw = os.environ.get("FT_PASSWORD", "")
+        if not pw:
+            print("页面停在登录那一屏 —— 用 FT_PASSWORD=<密码> 再跑一次。")
+            sys.exit(2)
+        page.fill("#gate-pass", pw)
+        page.click("button:has-text('进入')")
+        page.wait_for_timeout(1200)
+        h = app(page)
+        if "连接这台 NAS" in h:
+            print("密码没被接受 —— 检查 FT_PASSWORD。")
+            sys.exit(2)
+    check("过了入口 gate 进到应用",
+          "登记第一台机身" in h or "机库" in h, "第一屏 %d 字符" % len(h))
+
+    # ── ① 空状态 ──
+    page.wait_for_timeout(400)
     h = app(page)
     check("空库首页是空状态", "还没有登记任何机身" in h and "登记第一台机身" in h,
           "%d 字符" % len(h))
@@ -132,18 +156,16 @@ with sync_playwright() as p:
     check("机身页没有进度条", 'class="filmbar"' not in h and "还剩" not in h)
     check("机身页主按钮已是换一卷", "换一卷" in h and 'btn primary' in h)
 
-    # ── ④ 刷新一次，数据要活着（顺带验证 SW 装上后不影响）──
+    # ── ④ 刷新一次，数据要活着（顺带验证没有 SW 接管）──
     page.reload(wait_until="load")
-    page.wait_for_timeout(700)
+    page.wait_for_timeout(900)
     h = app(page)
     check("刷新后数据还在", "Kodak Portra 400" in h and "我的第一台" in h)
-    # app 只在 https 下注册 SW（`location.protocol === "https:"` 那道判断），
-    # 所以拿 http 本地服务跑的时候这条天然不成立 —— 跳过，不算失败。
-    if BASE.startswith("https:"):
-        check("刷新后 SW 已接管",
-              page.evaluate("!!navigator.serviceWorker.controller") is True)
-    else:
-        print("%-34s %s" % ("刷新后 SW 已接管", "跳过（http 本地跑，SW 只在 https 注册）"))
+    # 页面必须联网才能打开：没有离线缓存，也不该有任何 SW 接管这一页 ——
+    # 容器停了就该打不开，而不是从缓存里端出旧壳。
+    check("刷新后没有 SW 接管",
+          page.evaluate("!!navigator.serviceWorker.controller") is False,
+          "缓存已下线（旧客户端上的那份会被自毁版清掉）")
 
     # ── ⑤ 统计页：一台上不了卷的机身 ──
     page.evaluate("location.hash = '#/stats'")
@@ -154,20 +176,16 @@ with sync_playwright() as p:
     check("统计页无累计快门", "累计快门" not in h and "按满卷算" not in h)
 
     # ── ⑥ 设置页：NAS 那一栏 ──
-    # 页面就是从这个后端发出来的，所以这一栏必须展开成「输密码 / 已连上」那一屏，
-    # 而不是「这一页不是从 NAS 打开的」。后者意味着探活那条路断了 ——
-    # 而只要探活断了，整个「本机被清空后自动恢复」的能力就跟着没了。
+    # 能翻到设置页就说明已经连上了（没连上会被 gate 挡在应用外面），
+    # 所以这一栏只剩「已连上」一种排版，而且不该再有密码框 ——
+    # 输密码那一屏现在是整个应用的入口，见上面 ⓪。
     page.evaluate("location.hash = '#/settings'")
     page.wait_for_timeout(400)
     h = app(page)
-    nas_live = page.evaluate(
-        "async () => { try { const r = await fetch('/api/health'); "
-        "return !!(r && r.ok); } catch(e){ return false; } }")
-    if nas_live:
-        check("设置页有 NAS 这一栏", "同步到这台 NAS" in h and 'id="nas-pass"' in h)
-        check("NAS 那栏没被收起来", "只在页面" not in h, "探活成功")
-    else:
-        print("%-34s %s" % ("设置页有 NAS 这一栏", "跳过（拿本地静态服务跑的，没有 /api/）"))
+    check("设置页 NAS 那一栏是已连上",
+          "这台 NAS" in h and "已连上" in h and 'id="gate-pass"' not in h)
+    check("NAS 那一栏有存/读/断开三个按钮",
+          all(s in h for s in ["立即存到 NAS", "重新读取", "断开连接"]))
     # GitHub 那整套已经拆掉了。这一条是防它长回来：页面里出现任何一个
     # GitHub 相关的字眼，都说明有残留没摘干净。
     check("设置页不再提 GitHub",
