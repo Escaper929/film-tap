@@ -11,11 +11,11 @@
 
    ⚠️ 现在镜像由 watchtower 自动更新，这一条比以前**更要紧**：
       更新是无人值守发生的，没人盯着“手机上是不是还是旧版”。 */
-const CACHE = "filmtap-v20";
+const CACHE = "filmtap-v21";
 const SHELL = ["./", "./index.html", "./manifest.webmanifest"];
 /* SHA-256(index.html + "\n" + manifest.webmanifest)，按换行归一化后算。
    算错不要紧：跑 `node _selftest.js` 会把正确的值打出来，照抄即可。 */
-const SHELL_FP = "f16655c4cfc80aefbe687e5fcf6db09aae03a90f1fcd9900461a20a4a0cf7cf0";
+const SHELL_FP = "d11d6dab8fb492afb48d489f792e0c880e6efd16aff6b835285a2d0b04de9042";
 
 self.addEventListener("install", e => {
   e.waitUntil(

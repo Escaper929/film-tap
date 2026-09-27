@@ -58,7 +58,7 @@ const CRED_RULES = [
    而那正是这个护栏要拦的东西。所以 deploy.sh 只接收「主机」当参数，自己不含地址。 */
 const SHIPPED = [
   "index.html", "sw.js", "manifest.webmanifest",
-  "README.md", "_selftest.js", "_shots.py", "_firstrun.py",
+  "README.md", "_selftest.js", "_shots.py", "_firstrun.py", "_obsidian_test.py",
   "model/build_fob.py", "model/fob.scad", "model/preview.py", "model/render.py",
   "nas/server.py", "nas/deploy.sh", "nas/update.sh",
   "Dockerfile", ".dockerignore", ".github/workflows/docker.yml"
@@ -617,6 +617,7 @@ try {
        名字漏了一个，被测的那段 JS 就会去全局找真的实现而找不到，于是报「有泄漏」。
        那个失败看着像注入，其实是这张表过期了，纯噪音。 */
     "nasLogin","nasLogout","nasPush","nasPull","toggleNasAuto","syncNasLoginBtn",
+    "obsPreview","obsSync",
     "wipe","exportCorrupt",
     "dropCorrupt","deleteFilm","saveFilm","updatePP","document"];
 
@@ -1236,6 +1237,25 @@ try {
                         h.indexOf('id="nas-pass"') < 0;
       check("NAS：不在 NAS 上时收起", collapsed,
             collapsed ? "只留一句说明，没有密码框和按钮" : "还留了入口");
+
+      /* ── ⑫ Obsidian 那一栏：也只有「已连上 NAS」时才出现。
+         它做的事全在服务端（读 NAS 上那份笔记），所以没连上时整栏收起，
+         而不是放一个点不动的按钮。两个按钮的名字都要在这张 PARAMS 表里，
+         否则上面那条「不能逃出 onclick」会把它误报成注入。 ── */
+      nasState = "yes"; nasSess = true;
+      render();
+      h = __app();
+      const obsShown = h.indexOf("从 Obsidian 同步胶卷库存") >= 0 &&
+                       h.indexOf('onclick="obsPreview()"') >= 0 &&
+                       h.indexOf('onclick="obsSync()"') >= 0 &&
+                       h.indexOf('id="obs-out"') >= 0;
+      nasState = "yes"; nasSess = false;
+      render();
+      const obsHidden = __app().indexOf("从 Obsidian 同步胶卷库存") < 0;
+      check("Obsidian：只在已连上 NAS 时出现", obsShown && obsHidden,
+            "已登录=" + obsShown + " 未登录收起=" + obsHidden);
+
+      nasState = "no"; nasSess = false;     // 还原 ⑪ 留下的状态，别影响后面的用例
     } catch (e) {
       check("NAS 自建后端", false, "抛异常 " + e.message);
     }

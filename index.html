@@ -1446,6 +1446,7 @@ function renderSettings(db){
      + '下面配了这台 NAS 或 WebDAV 的话，那两处也会各兜住一份。</div>';
 
   h += renderNasSection();
+  h += renderObsidianSection();
 
   const dav = getDav();
   h += '<h2>同步到 WebDAV（可选）</h2>';
@@ -1584,6 +1585,28 @@ function nasAtText(at){
   /* 存的是 UTC ISO。直接 slice 出「年月日 时分」当 UTC 显示，
      并写明是 UTC —— 猜时区只会让「上次同步」这个时间对不上。 */
   return String(at).replace("T", " ").slice(0, 16) + " UTC";
+}
+
+/* ── 从 Obsidian 同步那一栏 ──
+   只在「这一页确实是从 NAS 打开的、而且已经连上」时才出现。
+   它是 NAS 上那个进程在读 NAS 上那份笔记，页面这边没有别的路可走 ——
+   所以不满足条件时整栏收起，而不是放一个点不动的按钮。 */
+function renderObsidianSection(){
+  if (nasState !== "yes" || !nasSess) return "";
+  let h = '<h2>从 Obsidian 同步胶卷库存</h2>';
+  h += '<div class="card" style="padding:16px 18px">'
+     + '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
+     + '把 NAS 上那份胶卷清单笔记，和这里的库存对一遍。只认三列 —— '
+     + '<b>品牌/型号、格式、数量</b>：笔记里别的列、别的板块<b>一个字节都不动</b>。<br>'
+     + '数量是<b>带基线</b>地合并的：你在笔记里买了卷、在 App 里装了卷，'
+     + '两边同时改也不会互相盖掉；回写时只替换数量那一格里的数字。</div>';
+  h += '</div>';
+  h += '<div class="row">'
+     +   '<button class="btn" onclick="obsPreview()">先看会改什么</button>'
+     +   '<button class="btn primary" onclick="obsSync()">立即同步</button>'
+     + '</div>';
+  h += '<div id="obs-out"></div>';
+  return h;
 }
 
 /* 读不出来时露一条横幅。文案的重点是「没丢」——
@@ -2204,6 +2227,126 @@ async function nasPull(){
   clearTimeout(nasTimer); nasTimer = null;
   toast("已从 NAS 恢复 " + remoteN + " 台机身");
   go("#/");
+}
+
+/* ══════════ 从 Obsidian 同步 ══════════
+   NAS 上那个进程去读 NAS 上那份笔记，所以这里只是「按一下、转达结果」。
+   两条路：
+     GET  /api/obsidian       只读预览，一个字节都不动
+     POST /api/obsidian/sync  真执行（读 → 合并 → 写 data.json → 回写笔记 → 存基线）
+   失败的说法跟 NAS 那一栏同一套：先分「连不上 / 会话没了」，再谈别的。 */
+async function obsAsk(path, method){
+  const res = await nasCall(path, {
+    method: method || "GET",
+    headers: { "Accept":"application/json" }
+  });
+  if (!res) return { error:"连不上服务端" };
+  if (res.status === 401) return { error:"unauthorized" };
+  let j = null;
+  try{ j = await res.json(); }catch(e){}
+  if (!j) return { error:"服务端返回了读不懂的内容" };
+  return { body:j };
+}
+
+function obsFail(err){
+  if (err === "unauthorized"){
+    nasSess = false;
+    toast("连接已失效，重新输一次密码");
+    render(true);
+    return;
+  }
+  toast(err);
+}
+
+/* 把后端给的这一份结果画出来。预览和执行共用 —— 措辞与那句话说到底出自
+   后端一处（body.message），这里只负责把它摆到页面上，免得两处措辞打架。 */
+function obsSummaryHtml(body, preview){
+  const bad = !!body.blocked ||
+              ["no_file","parse_failed","blocked","write_failed","partial","not_configured"]
+                .indexOf(body.state) >= 0;
+  let h = '<div class="banner ' + (bad ? "w" : "i") + '" style="margin-top:12px">'
+        + esc(body.message || "") + '</div>';
+
+  const changes = body.changes || [];
+  if (changes.length){
+    h += '<div class="card" style="padding:12px 16px">';
+    h += '<div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">'
+       + (preview ? "会改成这样" : "已经改成这样") + '（' + changes.length + ' 行）</div>';
+    for (const c of changes){
+      const from = (c.old === null || c.old === undefined) ? "—" : c.old;
+      const why = c.basis === "obsidian" ? "以笔记为准"
+                : (c.action === "same" ? "回写笔记" : "两边合并");
+      h += '<div style="padding:6px 0;border-top:1px solid var(--line)">'
+         + '<div style="display:flex;gap:10px;align-items:baseline">'
+         +   '<div style="flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+         +     esc(c.stock) + '</div>'
+         +   '<div class="mono" style="color:var(--ink-3);flex:none">' + esc(c.format || "") + '</div>'
+         + '</div>'
+         + '<div class="mono" style="font-size:13px;color:var(--ink-2);margin-top:3px">'
+         +   esc(from) + ' → <b style="color:var(--ink)">' + esc(c.new) + '</b>'
+         +   '<span style="color:var(--ink-3)">　' + esc(why) + '</span></div>'
+         + '</div>';
+    }
+    h += '</div>';
+  }
+
+  const skipped = body.skipped || [];
+  if (skipped.length){
+    h += '<div class="hint">有 ' + skipped.length + ' 行没能读出来，都原样留着没动：'
+       + esc(skipped.map(s => "第" + s.line + "行（" + s.reason + "）").join("；")) + '</div>';
+  }
+  const unmatched = body.unmatched || [];
+  if (unmatched.length){
+    h += '<div class="hint">这里的库存有 ' + unmatched.length + ' 种在笔记那张表里找不到，'
+       + '这次没删它们（同步只按笔记来，不会替你删东西）。</div>';
+  }
+  const warnings = body.warnings || [];
+  if (warnings.length){
+    h += '<div class="hint" style="color:var(--warn)">' + esc(warnings.join("；")) + '</div>';
+  }
+  return h;
+}
+
+function obsShow(html){
+  const box = $("#obs-out");
+  if (box) box.innerHTML = html;
+}
+
+async function obsPreview(){
+  if (nasState !== "yes" || !nasSess){ toast("先在上面连接一次"); return; }
+  toast("读取中…");
+  const r = await obsAsk("/obsidian");
+  if (r.error){ obsFail(r.error); return; }
+  obsShow(obsSummaryHtml(r.body, true));
+  toast(r.body.state === "ok" && !r.body.blocked ? "看完了，还没动任何数据" : (r.body.message || ""));
+}
+
+async function obsSync(){
+  if (nasState !== "yes" || !nasSess){ toast("先在上面连接一次"); return; }
+  toast("同步中…");
+  const r = await obsAsk("/obsidian/sync", "POST");
+  if (r.error){ obsFail(r.error); return; }
+
+  /* 同步之后，服务端那份才是合并过的结果 —— 把它拉回本机，
+     不然这里还停着旧数字，下次自动上传又可能把它推回去。
+     拉完再 render：render 会把 #obs-out 清掉，所以把结果留一份，回头补回去。 */
+  const html = obsSummaryHtml(r.body, false);
+  if (r.body.ok){
+    const got = await nasFetchData();
+    if (!got.error && got.data){
+      const c = getNas();
+      if (got.rev) c.rev = got.rev;
+      c.at = new Date().toISOString();
+      saveNas(c);
+      save(normalize(got.data));
+      clearTimeout(nasTimer); nasTimer = null;   // 刚拉回来的这份不用再打回去
+    }
+    render(true);
+    obsShow(html);
+  } else {
+    obsShow(html);
+  }
+  toast(r.body.message || (r.body.ok ? "已同步" : "没有同步"));
 }
 
 function toggleNasAuto(){

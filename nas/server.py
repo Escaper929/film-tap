@@ -34,7 +34,9 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -55,6 +57,11 @@ MAX_BODY       = 4 * 1024 * 1024     # 4MB，正常数据是几十 KB
 
 LOGIN_WINDOW   = 300                 # 登录失败统计窗口（秒）
 LOGIN_MAX_FAIL = 8                   # 窗口内失败超过这个数就 429
+
+# Obsidian 联动（见下面的解析 / 合并 / 回写那一节）
+OBSIDIAN_BASELINE    = "obsidian-sync.json"   # 同步基线，独立于 data.json
+OBSIDIAN_BACKUP_DIR  = "obsidian-backups"     # 回写前的原文备份
+OBSIDIAN_BACKUP_KEEP = 20
 
 # 静态文件白名单。**不做目录遍历** —— 只认这几个文件名，别的路径一律 404。
 STATIC = {
@@ -85,6 +92,257 @@ def verify_password(password, stored):
         return False
     salt, _ = stored.split("$", 1)
     return hmac.compare_digest(hash_password(password, salt), stored)
+
+
+# ══════════════ Obsidian 联动：解析 / 合并 / 回写 ══════════════
+#
+# 只碰「## 胶卷列表」那一张表的三列：品牌/型号、格式、数量。
+# 其它列（序号 / 类型 / ISO / 状态 / 购买时间 / 购买价格 / 备注）和
+# 其它几个板块（出售记录 / 拍摄记录 / 库存统计 / 冲扫店）**一个字都不动** ——
+# 那一整份是人手写的账本，回写必须只改一个数字，其余逐字节保留。
+#
+# 数量用「带基线的增量」合并：
+#   基线 B = 上次同步时的剩余数；Obsidian 现值 O；App 现值 A。
+#   新值 = B + (O - B) + (A - B)
+# 买卷（Obsidian 那头 +2）和装卷（App 这头 -1）都是**加法事件**，
+# 于是两边同时改也**不冲突**，不需要「谁赢」这种规则。
+# 没有基线（首次同步 / 基线丢了）时一律以 Obsidian 为准，并如实标出来。
+
+OBSIDIAN_SECTION = "胶卷列表"
+FORMATS = ("135", "120", "110", "大画幅")
+
+# 表头别名。比前端的 IMPORT_COLS 窄：这里**故意不收「类型」** ——
+# 本文件里「类型」是独立的一列（电影卷 / 彩色负片 / 黑白负片），
+# 把「类型」当成型号别名会把它错认成型号列。
+OBS_COLS = {
+    "stock":  ("品牌/型号", "品牌型号", "型号", "胶卷型号", "型号名称", "胶卷", "名称", "品名", "film", "stock"),
+    "count":  ("数量", "卷数", "剩余", "剩余卷数", "存量", "库存", "qty", "count", "rolls"),
+    "format": ("格式", "画幅", "规格", "幅面", "size", "format"),
+}
+
+_FORMAT_PROBES = (
+    ("大画幅", re.compile(r"4\s*[x×*]\s*5|大画幅|页片|sheet", re.I)),
+    ("135",   re.compile(r"135|\b3[35]\s*mm\b|全画幅", re.I)),
+    ("120",   re.compile(r"\b120\b|中画幅|6\s*[x×*]\s*[467]|645", re.I)),
+    ("110",   re.compile(r"\b110\b", re.I)),
+)
+
+
+def film_key(stock, fmt):
+    """与前端 filmKey() 完全等价：小写 + 空白折叠成 '-'，中文原样保留。
+    两边算出来的键必须一模一样，否则同一条库存会被当成两条。"""
+    base = re.sub(r"\s+", "-", str(stock or "").strip().lower()).strip("-")
+    return (base or "roll") + "@" + (fmt or "其他")
+
+
+def probe_format(text):
+    for name, rx in _FORMAT_PROBES:
+        if rx.search(text or ""):
+            return name
+    return None
+
+
+def norm_format(value, stock=""):
+    """画幅归一：表里写了就用表里的，没写就从型号名里猜。与前端 normFormat 等价。"""
+    s = str(value if value is not None else "").strip()
+    if s:
+        got = probe_format(s)
+        if got:
+            return got
+    return probe_format(str(stock or "")) or "135"
+
+
+def parse_count(value):
+    """从 "4卷" / "4" 里取数字。读不出返回 None（这行会被记下来，不静默丢掉）。"""
+    m = re.search(r"\d+", str(value if value is not None else ""))
+    return int(m.group()) if m else None
+
+
+def _norm_head(s):
+    t = str(s if s is not None else "").strip().lower()
+    t = re.sub(r"[\s\u3000]", "", t)
+    t = re.sub(r"[（(].*?[)）]", "", t)
+    return re.sub(r"[:：*]", "", t)
+
+
+def map_columns(headers):
+    """识别表头 → {stock:1, count:5, format:4}。
+    必须整表精确匹配一遍、再整表包含匹配一遍 —— 合成一趟的话，
+    「品牌/型号」会被先命中的「型号」抢走。与前端 mapImport 同一套两趟法。"""
+    norms = [_norm_head(h) for h in headers]
+    out = {}
+    for loose in (False, True):
+        for i, n in enumerate(norms):
+            if not n:
+                continue
+            for key, aliases in OBS_COLS.items():
+                if key in out:
+                    continue
+                for a in aliases:
+                    na = _norm_head(a)
+                    hit = (na in n) if loose else (n == na)
+                    if hit:
+                        out[key] = i
+                        break
+    return out
+
+
+def iter_cells(line):
+    """把一行 markdown 表格切成 [(start, end, text)]，start/end 是**原文里的偏移**。
+    回写就靠这个偏移只替换数量那一格里的数字，其余字符一个都不动。"""
+    cells, start = [], None
+    for i, ch in enumerate(line):
+        if ch == "|":
+            if start is not None:
+                cells.append((start, i, line[start:i]))
+            start = i + 1
+    if start is not None and line[start:].strip() != "":
+        cells.append((start, len(line), line[start:]))
+    return cells
+
+
+def _is_sep_row(texts):
+    """表格的分隔行（|------|------|）。"""
+    return bool(texts) and all(t.strip() and set(t.strip()) <= {"-", ":"} for t in texts)
+
+
+def parse_film_table(text):
+    """解析「## 胶卷列表」里的那张表。
+    → {ok, reason?, lines, rows, skipped}；rows 里带上回写要用的行号与单元格偏移。"""
+    lines = text.splitlines(True)
+    if not lines:
+        return {"ok": False, "reason": "文件是空的"}
+
+    head = re.compile(r"^##\s+" + re.escape(OBSIDIAN_SECTION) + r"\s*$")
+    start = None
+    for i, ln in enumerate(lines):
+        if head.match(ln.rstrip("\r\n").strip()):
+            start = i + 1
+            break
+    if start is None:
+        return {"ok": False, "reason": "没找到「## %s」这一节" % OBSIDIAN_SECTION}
+
+    end = len(lines)
+    for j in range(start, len(lines)):
+        if re.match(r"^##\s+", lines[j].rstrip("\r\n").strip()):
+            end = j
+            break
+
+    hdr = None
+    for j in range(start, end):
+        s = lines[j].rstrip("\r\n").strip()
+        if s.startswith("|") and s.count("|") >= 2:
+            hdr = j
+            break
+    if hdr is None:
+        return {"ok": False, "reason": "「%s」这一节里没有表格" % OBSIDIAN_SECTION}
+
+    table = []
+    for j in range(hdr, end):
+        if lines[j].rstrip("\r\n").strip().startswith("|"):
+            table.append(j)
+        else:
+            break
+
+    header_cells = [c[2].strip() for c in iter_cells(lines[hdr].rstrip("\r\n"))]
+    colmap = map_columns(header_cells)
+    missing = [k for k in ("stock", "count") if k not in colmap]
+    if missing:
+        return {"ok": False,
+                "reason": "表头里认不出「%s」列（表头是：%s）"
+                          % ("、".join(OBS_COLS[k][0] for k in missing), " / ".join(header_cells))}
+
+    rows, skipped = [], []
+    for j in table[1:]:
+        body = lines[j].rstrip("\r\n")
+        cells = iter_cells(body)
+        texts = [c[2] for c in cells]
+        if _is_sep_row(texts):
+            continue
+        # 修「|| 7 |」这种多出来的空首格 —— 真实文件里就有两行是这样。
+        while len(cells) > len(header_cells) and cells[0][2].strip() == "":
+            cells.pop(0)
+        if len(cells) != len(header_cells):
+            skipped.append({"line": j + 1, "reason": "有 %d 格，表头是 %d 格"
+                                                  % (len(cells), len(header_cells))})
+            continue
+        stock = cells[colmap["stock"]][2].strip()
+        count_raw = cells[colmap["count"]][2]
+        if not stock:
+            skipped.append({"line": j + 1, "reason": "这一行没有型号"})
+            continue
+        count = parse_count(count_raw)
+        if count is None:
+            skipped.append({"line": j + 1, "reason": "数量里读不出数字：%s" % count_raw.strip()})
+            continue
+        fmt = norm_format(cells[colmap["format"]][2] if "format" in colmap else "", stock)
+        rows.append({
+            "line": j + 1,
+            "line_index": j,
+            "stock": stock,
+            "format": fmt,
+            "count": count,
+            "raw_count": count_raw.strip(),
+            "cell": cells[colmap["count"]][:2],
+        })
+
+    if not rows:
+        return {"ok": False, "reason": "「%s」的表里一行数据都没解析出来" % OBSIDIAN_SECTION}
+
+    return {"ok": True, "lines": lines, "rows": rows, "skipped": skipped}
+
+
+def apply_counts(lines, updates):
+    """把 rows 里的数量改成新值。**只替换那一格里的数字**：行尾、其它单元格、
+    以及整份文件的其余部分都原样保留。updates = [(line_index, start, end, new)]。"""
+    out = list(lines)
+    for line_index, start, end, new_count in updates:
+        body = out[line_index].rstrip("\r\n")
+        tail = out[line_index][len(body):]
+        m = re.search(r"\d+", body[start:end])
+        if not m:
+            continue
+        out[line_index] = body[:start + m.start()] + str(new_count) + body[start + m.end():] + tail
+    return out
+
+
+def merge_films(rows, films, baseline):
+    """带基线的增量合并 → (changes, unmatched, warnings)。
+
+    同一款（型号@画幅）两边都改过也不冲突：买卷是 +、装卷是 -，加在一起就是净变化。
+    没有基线时以 Obsidian 为准，并把 basis 标成 "obsidian"，让调用方如实告诉用户。
+    """
+    changes, warnings = [], []
+    seen = set()
+    for r in rows:
+        key = film_key(r["stock"], r["format"])
+        seen.add(key)
+        prev = films.get(key)
+        old = int(prev.get("count") or 0) if isinstance(prev, dict) else None
+        obs = int(r["count"])
+
+        B = baseline.get(key)
+        if isinstance(B, int) and old is not None:
+            new = B + (obs - B) + (old - B)      # = old + (obs - B)
+            basis = "merge"
+        else:
+            new = obs
+            basis = "obsidian"
+
+        overflow = 0
+        if new < 0:
+            overflow, new = -new, 0
+            warnings.append("%s：合并后是负数，按 0 计（多扣了 %d 卷）" % (r["stock"], overflow))
+
+        changes.append({
+            "key": key, "stock": r["stock"], "format": r["format"],
+            "old": old, "obs": obs, "new": new, "basis": basis, "overflow": overflow,
+            "action": "new" if old is None else ("change" if old != new else "same"),
+            "line": r["line"], "line_index": r["line_index"], "cell": r["cell"],
+        })
+
+    unmatched = sorted(k for k in films if k not in seen)
+    return changes, unmatched, warnings
 
 
 class Store:
@@ -283,6 +541,183 @@ class Store:
             out.append(item)
         return out
 
+    # ── Obsidian 联动 ──
+    def obsidian_path(self):
+        """vault 里的那个文件路径。从环境变量来 —— **绝不能硬编码进仓库**：
+        这个仓库是公开的，路径本身就在讲谁的 NAS 怎么摆的。"""
+        return (os.environ.get("FT_OBSIDIAN") or "").strip()
+
+    def read_baseline(self):
+        b = self._read_json(self.p(OBSIDIAN_BASELINE), {}) or {}
+        return b if isinstance(b, dict) else {}
+
+    def write_baseline(self, obj):
+        self._write_json(self.p(OBSIDIAN_BASELINE), obj, 0o600)
+
+    def _write_text_atomic(self, path, text):
+        """同目录临时文件 → fsync → os.replace，和别的写盘一个规矩；
+        但**保留原文件的权限位** —— 那是用户的笔记，别因为我们碰过一次就改掉它。
+
+        `O_BINARY` 这一位不能省：Windows 上 `os.open` 默认是文本模式，
+        会把写出的每个 "\\n" 再补一个 "\\r"，于是笔记里原有的 CRLF 变成 CRLFCRLF ——
+        整份文件被撑花。容器跑在 Linux 上不受影响，但「逐字节保留」是这个功能
+        对用户笔记的核心承诺，不该只在某一个平台上成立。
+        （Linux 上没有 O_BINARY 这个常量，取 0 即等于不加。）"""
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            mode = 0o644
+        tmp = path + ".filmtap-tmp"
+        data = text.encode("utf-8")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                     | getattr(os, "O_BINARY", 0), mode)
+        try:
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+
+    def _backup_vault_file(self, path):
+        """回写前把原文留一份。出问题时这是唯一能整份还原的东西。"""
+        d = self.p(OBSIDIAN_BACKUP_DIR)
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dst = os.path.join(d, "%s-%s" % (stamp, os.path.basename(path)))
+        try:
+            shutil.copyfile(path, dst)
+            os.chmod(dst, 0o600)
+        except OSError:
+            return None
+        names = sorted(n for n in os.listdir(d))
+        for n in names[:-OBSIDIAN_BACKUP_KEEP]:
+            try:
+                os.remove(os.path.join(d, n))
+            except OSError:
+                pass
+        return dst
+
+    def obsidian_sync(self, dry=False):
+        """读 vault → 合并 →（非 dry 时）写 data.json + 回写 md + 更新基线。
+
+        返回 (状态, 详情)。状态：
+          not_configured / no_file / parse_failed / blocked / write_failed /
+          partial（App 写成了但回写 vault 失败）/ ok
+        """
+        path = self.obsidian_path()
+        if not path:
+            return "not_configured", {}
+        if not os.path.isfile(path):
+            return "no_file", {"path": path}
+
+        with self.lock:
+            try:
+                with open(path, "rb") as f:
+                    raw = f.read()
+            except OSError:
+                return "no_file", {"path": path}
+            parsed = parse_film_table(raw.decode("utf-8", "replace"))
+            if not parsed["ok"]:
+                return "parse_failed", {"path": path, "reason": parsed["reason"]}
+
+            cur_raw, _ = self.read_data()
+            db = {}
+            if cur_raw:
+                try:
+                    db = json.loads(cur_raw.decode("utf-8"))
+                except ValueError:
+                    db = {}
+            if not isinstance(db, dict):
+                db = {}
+            films = db.get("films") if isinstance(db.get("films"), dict) else {}
+            cameras = db.get("cameras") if isinstance(db.get("cameras"), dict) else {}
+
+            base = self.read_baseline()
+            if base.get("file") != path:            # 换了文件，旧基线作废
+                base = {}
+            baseline = base.get("counts") if isinstance(base.get("counts"), dict) else {}
+            prev_rows = base.get("rows")
+
+            # 护栏：行数骤减说明文件多半被写坏了。宁可拒绝，也不要把库存清零。
+            blocked = None
+            if isinstance(prev_rows, int) and prev_rows > 0 and len(parsed["rows"]) < prev_rows * 0.5:
+                blocked = ("解析出的行数从 %d 掉到了 %d，看着像文件被写坏了 —— "
+                           "这次没动任何数据" % (prev_rows, len(parsed["rows"])))
+
+            changes, unmatched, warnings = merge_films(parsed["rows"], films, baseline)
+            # 要展示 / 要处理的，是这两类里的一种：
+            #   · App 侧真变了（action != "same"）
+            #   · App 没变，但笔记那一格和合并结果对不上（action == "same" 且 new != obs）
+            # 第二类是**最常见**的一类：App 里装了/拍了一卷、笔记还没改。
+            # 漏掉它，笔记就永远追不上 App。
+            todo = [c for c in changes
+                    if c["action"] != "same" or c["new"] != c["obs"]]
+            summary = {
+                "path": path,
+                "rows": len(parsed["rows"]),
+                "skipped": parsed["skipped"],
+                "firstSync": not baseline,
+                "changes": [{k: c[k] for k in ("key", "stock", "format", "old", "new", "obs", "action", "basis")}
+                            for c in todo],
+                "unchanged": len(changes) - len(todo),
+                "unmatched": unmatched,
+                "warnings": warnings,
+                "at": base.get("at") or "",
+            }
+            if dry:
+                summary["blocked"] = blocked
+                return "ok", summary
+            if blocked:
+                summary["blocked"] = blocked
+                return "blocked", summary
+
+            # ① 先写 data.json —— App 是权威的一份，先让它落地
+            newfilms = dict(films)
+            for c in changes:
+                rec = dict(newfilms[c["key"]]) if isinstance(newfilms.get(c["key"]), dict) else {}
+                rec["id"] = c["key"]
+                rec["stock"] = c["stock"]
+                rec["format"] = c["format"]
+                rec["count"] = c["new"]
+                # 其余字段（有效期 / 购入日期 / 单价 / 备注）不动 —— 它们不在同步范围里
+                newfilms[c["key"]] = rec
+            db["version"] = 2
+            db["cameras"] = cameras
+            db["films"] = newfilms
+            payload = json.dumps(db, ensure_ascii=False, indent=2).encode("utf-8")
+            state, info = self.write_data(payload, None, True)
+            if state != "ok":
+                return "write_failed", {"path": path, "message": "写 data.json 失败：" + state}
+
+            # ② 回写 vault：哪一格和合并结果对不上就改哪一格，判断只看 new != obs。
+            #    遍历 changes 而不是 todo：App 里拍掉一卷后，「App 值」可能和
+            #    合并结果正好相等（action 仍是 same），可笔记那一格还是旧数字，
+            #    一样得写回去，否则笔记永远追不上。
+            writes = [(c["line_index"], c["cell"][0], c["cell"][1], c["new"])
+                      for c in changes if c["new"] != c["obs"]]
+            backup = None
+            if writes:
+                backup = self._backup_vault_file(path)
+                try:
+                    self._write_text_atomic(path, "".join(apply_counts(parsed["lines"], writes)))
+                except OSError as e:
+                    # App 已更新、Obsidian 没写成功。**故意不更新基线** ——
+                    # 增量是可重放的，下次同步会算出同一个结果，不会重复加减。
+                    summary.update({"written": 0, "backup": backup, "rev": info.get("rev"),
+                                    "vaultError": "回写 Obsidian 失败：%s" % e})
+                    return "partial", summary
+
+            # ③ 基线最后写：只有前面都成了，它才代表「已经同步到的状态」
+            self.write_baseline({
+                "file": path,
+                "at": now_iso(),
+                "rows": len(parsed["rows"]),
+                "counts": {c["key"]: c["new"] for c in changes},
+            })
+            summary.update({"written": len(writes), "backup": backup,
+                            "rev": info.get("rev"), "vaultError": None})
+            return "ok", summary
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = APP_NAME
@@ -382,6 +817,51 @@ class Handler(BaseHTTPRequestHandler):
         万一自己手滑输错被锁，等五分钟，或者重启容器清掉内存里的计数。"""
         return self.client_address[0]
 
+    # ── Obsidian 联动的响应外壳 ──
+    def _obsidian_body(self, state, info):
+        """把 (状态, 详情) 拼成给前端的一句话 + 结构化字段。
+        中文提示只在这里生成一处，预览和执行两条路共用，措辞不会两边打架。"""
+        info = info or {}
+        changes = info.get("changes") or []
+        n_new = sum(1 for c in changes if c.get("action") == "new")
+        n_chg = sum(1 for c in changes if c.get("action") == "change")
+        # App 侧没动、只是笔记那一格落后了 —— 要写回笔记，但不算「App 改动」。
+        n_back = sum(1 for c in changes
+                     if c.get("action") != "new" and c.get("action") != "change")
+        blocked = info.get("blocked")
+
+        if state == "not_configured":
+            msg = "这台机器没配 Obsidian 同步（部署时要挂载 vault 并设 FT_OBSIDIAN）"
+        elif state == "no_file":
+            msg = "找不到那个笔记文件：" + str(info.get("path") or "")
+        elif state == "parse_failed":
+            msg = "读不懂那份笔记：" + str(info.get("reason") or "")
+        elif blocked:
+            # 护栏拦下。dry-run 时 state 仍是 ok，所以这里先判 blocked。
+            msg = blocked
+        elif state == "write_failed":
+            msg = str(info.get("message") or "写数据失败")
+        elif state == "partial":
+            msg = "库存已更新，但回写笔记失败：" + str(info.get("vaultError") or "")
+        elif not changes:
+            msg = "两边已经一致，没有要改的（对上了 %d 行）" % (info.get("unchanged") or 0)
+        else:
+            bits = []
+            if n_new:
+                bits.append("新增 %d" % n_new)
+            if n_chg:
+                bits.append("改动 %d" % n_chg)
+            if n_back:
+                bits.append("回写笔记 %d" % n_back)
+            msg = "、".join(bits) + "，另外 %d 行没变" % (info.get("unchanged") or 0)
+        if info.get("firstSync") and state == "ok":
+            msg = "首次同步，以 Obsidian 为准 —— " + msg
+
+        out = dict(info)
+        out.update({"ok": state == "ok" and not blocked, "state": state,
+                    "configured": state != "not_configured", "message": msg})
+        return out
+
     # ── 路由 ──
     def do_GET(self):
         path = urlparse(self.path).path
@@ -410,6 +890,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._json(401, {"error": "unauthorized"})
             return self._json(200, {"items": self.store.history()})
+        if path == "/api/obsidian":
+            # dry-run：只读，报「会改什么」，一个字节都不动。
+            if not self._authed():
+                return self._json(401, {"error": "unauthorized"})
+            state, info = self.store.obsidian_sync(dry=True)
+            return self._json(200, self._obsidian_body(state, info))
         if path in ("/", "/index.html", "/sw.js", "/manifest.webmanifest"):
             return self._static("index.html" if path in ("/", "/index.html") else path[1:])
         return self._json(404, {"error": "not found"})
@@ -445,6 +931,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/logout":
             self.store.drop_session(self._token())
             return self._json(200, {"ok": True}, [self._cookie(None)])
+
+        if path == "/api/obsidian/sync":
+            if not self._authed():
+                return self._json(401, {"error": "unauthorized"})
+            state, info = self.store.obsidian_sync(dry=False)
+            body = self._obsidian_body(state, info)
+            # 只有 ok 是 200；没配好是 400（这台机器不该点这个按钮）；
+            # 其余（没文件 / 解析失败 / 护栏拦下 / 写盘失败 / 半成功）都是 409：
+            # 请求本身没问题，是当前状态不允许它完成。
+            code = 200 if state == "ok" else (400 if state == "not_configured" else 409)
+            return self._json(code, body)
 
         return self._json(404, {"error": "not found"})
 
