@@ -94,8 +94,8 @@ class Store:
         self.dir = data_dir
         self.log = log
         self.lock = threading.RLock()
-        os.makedirs(self.dir, mode=0o755, exist_ok=True)
-        os.makedirs(os.path.join(self.dir, HISTORY_DIR), mode=0o755, exist_ok=True)
+        os.makedirs(self.dir, mode=0o700, exist_ok=True)
+        os.makedirs(os.path.join(self.dir, HISTORY_DIR), mode=0o700, exist_ok=True)
         # 内存里的登录失败计数：{ip: [时间戳, ...]}。重启就清空，无所谓。
         self.fails = {}
 
@@ -230,7 +230,10 @@ class Store:
                     return "stale", {"rev": cur_rev}
 
             tmp = self.p(DATA_FILE + ".tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            # 0o600：data.json 是你的机身与胶卷清单，不需要让容器里别的
+            # 进程（或任何将来加进来的东西）读得到。容器里现在只有
+            # server.py 自己在跑，这是纵深防御，不是当前有洞。
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
                 os.write(fd, raw)
                 os.fsync(fd)
@@ -245,7 +248,8 @@ class Store:
     def _snapshot(self, raw, rev):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         path = self.p(HISTORY_DIR, "%s-%s.json" % (stamp, rev))
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        # 历史副本和本体同级敏感 —— 里面是同一份数据的不同版本。
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.write(fd, raw)
             os.fsync(fd)
@@ -358,10 +362,24 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def _client_ip(self):
-        # Lucky 反代会带 X-Forwarded-For；取第一段
-        fwd = self.headers.get("X-Forwarded-For", "")
-        if fwd:
-            return fwd.split(",")[0].strip()
+        """登录失败计数用的「客户端身份」。
+
+        ⚠️ **绝对不能信 `X-Forwarded-For`。**
+        这个头是客户端可以随便写的。用它来分桶的话，攻击者只要每次换一个假的
+        XFF 值，就能让每个桶都是新的、都是空的，于是 `LOGIN_MAX_FAIL` 永远
+        到不了 —— 限速等于不存在，密码可以无限猜。这是实测确认过的：
+        同一台机器带 20 个不同的伪造 XFF 打 20 次，一次都没被限速。
+
+        反代（Lucky）是跑在 NAS **本机**上的，容器端口只绑 127.0.0.1，
+        所以 `client_address[0]` 必然就是那台反代的回环地址 —— 它不区分
+        不同的外部访客，但**它伪造不了**。宁可所有人都挤在一个桶里
+        （真实意图是「挡住暴力猜测」而不是「按人限速」），也不要一个
+        可以被绕过的桶。
+
+        有个副作用要知道：反代和容器在同一台机器上，所以所有人共用
+        127.0.0.1 这一个桶 —— 8 次失败就 429 五分钟。对一个只有自己用的
+        家庭服务来说这是**期望的行为**（本来就不该有人在猜你的密码）；
+        万一自己手滑输错被锁，等五分钟，或者重启容器清掉内存里的计数。"""
         return self.client_address[0]
 
     # ── 路由 ──

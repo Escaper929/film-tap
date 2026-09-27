@@ -25,7 +25,24 @@ const CRED_RULES = [
   [/\bghp_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub classic 令牌"],
   [/\bgho_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub OAuth 令牌"],
   [/\bghs_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub 服务令牌"],
-  [/\bgithub_pat_[A-Za-z0-9_]{20,}/,                       "硬编码的 GitHub 细粒度令牌"]
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/,                       "硬编码的 GitHub 细粒度令牌"],
+
+  /* ── 个人信息（不是凭据，但一样不该进公开仓库）────────────────────────
+     这几条是 2026-09-27 做过一次专门针对「个人信息」的审计之后加的。
+     起因：令牌和密码都扫干净了，**但真实邮箱和本机路径一直在**，
+     而原来的 CRED_RULES 完全不管这一类 —— 「没有泄露」只是因为它没查。
+     两个具体的教训：
+       · Git 提交里的作者邮箱是**公开**的（`git log` 就能看到，不用克隆），
+         一旦推上去就永久留在历史里，删文件没用 —— 只能重写历史。
+         所以正确的做法是**一开始就别用它提交**（设 noreply 邮箱，见 README）。
+       · 文档里的示例路径很容易顺手写成自己机器的真实路径
+         （/Users/<你的用户名>/... 或 C:\Users\<用户名>\...），
+         那会把本机用户名连同操作系统一起告诉别人。示例一律写 /path/to/...。
+     注意 noreply 邮箱要排除掉 —— 那正是我们要大家用的那个。 */
+  [/[A-Za-z0-9._%+-]+@(?:qq|163|126|gmail|outlook|hotmail|foxmail|sina|yeah|icloud)\.[A-Za-z]{2,}/,
+                                                           "真实邮箱地址（提交里会永久公开）"],
+  [/\/Users\/[A-Za-z0-9._-]+\//,                           "本机真实路径 /Users/<用户名>/（泄露 macOS 用户名）"],
+  [/[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9._-]+[\\/]/,         "本机真实路径 C:\\Users\\<用户名>\\（泄露 Windows 用户名）"]
 ];
 
 /* 护栏要覆盖仓库里所有发得出去的文本文件。
@@ -815,12 +832,28 @@ try {
     'headers:{Authorization:"Ba' + 'sic dXNlcjpwYXNz"}',
     "token = " + "ghp_" + "A1b2C3d4E5f6G7h8I9j0".repeat(2),
     "token = " + "gho_" + "Z9y8X7w6V5u4T3s2R1q0".repeat(2),
-    "token = " + "github_" + "pat_" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8".repeat(2)
+    "token = " + "github_" + "pat_" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8".repeat(2),
+    /* 个人信息 —— 这几条是盯住「凭据之外」的那一半。
+       令牌密码扫干净了不代表没泄露：真实邮箱和本机路径同样能定位到人。
+
+       ⚠️⚠️ 样本必须用**运行时拼接**，不能写成完整字面量 —— 否则护栏在扫
+       到自己这个文件的时候会命中自己的样本，然后把自己判定成泄露。
+       这正是上一轮提过的「护栏自己的样本」那个坑，这次是第二次踩。
+       判断依据始终是同一条：**它在跑之前不是一个完整值。**
+
+       同理不能出现反引号（会截断这个 String.raw 模板串）。 */
+    "联系作者：somebody" + "@" + "qq.com",
+    "PY=/Users/" + "lh" + "/.venv/bin/python",
+    "C:" + "\\Users\\lh" + "\\AppData\\Local"
   ];
   const GOOD_SAMPLES = [
     "https://nas.example.com/dav/film/",
     'headers.Authorization = "Bearer " + token',            // 正确写法：令牌走变量，不进源码
     "https://api.github.com/repos/Escaper929/film-tap-data/contents/data.json",
+    /* 下面这两条必须放行，否则护栏会逼大家写“能通过但更糟”的代码：
+       noreply 邮箱是 GitHub 推荐的防泄露写法，占位路径是文档里唯一正确的示例。 */
+    "60599586+Escaper929@users.noreply.github.com",
+    "PY=/path/to/your/venv/bin/python",
     "film-tap",
     "换一卷"
   ];
@@ -1206,6 +1239,44 @@ try {
     } catch (e) {
       check("NAS 自建后端", false, "抛异常 " + e.message);
     }
+  })();
+
+  /* ══════════════════════════════════════════════════════════════════════
+     后端源码的静态性质 —— 这两条都是**实测确认过的洞**，靠读源码钉住。
+     为什么不做成运行时测试：这两条要真起一个服务器、伪造请求头才验得到，
+     而自检是零依赖、只在内存里跑的。静态断言挡不住所有变体，但能挡住
+     「有人把它改回去」这一种 —— 而那恰恰是最可能发生的情况。
+     ══════════════════════════════════════════════════════════════════════ */
+  (function () {
+    let src = "";
+    try { src = fs.readFileSync(path.join(__dirname, "nas/server.py"), "utf8"); }
+    catch (e) { check("后端：限速用不可伪造的身份", false, "读不到 nas/server.py"); return; }
+
+    /* ① 登录失败计数不能按 X-Forwarded-For 分桶。
+       那个头客户端随便写：每次换一个假值就能让每个桶都是空的，
+       LOGIN_MAX_FAIL 永远到不了 —— 限速等于不存在。
+       实测过：20 个不同伪造 XFF 打 20 次，一次都没被限速。
+       代码里只允许在注释里提到 XFF，不允许它出现在取值逻辑里。 */
+    const code = src.split("\n").filter(l => {
+      const t = l.trim();
+      return !t.startsWith("#") && !t.startsWith("⚠") && !/^["'*]/.test(t);
+    }).join("\n");
+    const xffUsed = /headers\.get\(\s*["']X-Forwarded-For["']/.test(code);
+    check("后端：限速用不可伪造的身份", !xffUsed,
+          xffUsed ? "!! _client_ip 又去信 X-Forwarded-For 了 —— 限速可被绕过"
+                  : "不读 XFF，用 client_address");
+
+    /* ② data.json / 历史副本不能是 0644。
+       它们是你的机身与胶卷清单，没有理由 world-readable。
+       注意 os.open(..., mode) 那一处传的是变量（默认 0600），不是字面量，
+       所以只查字面量 0o6xx 就够 —— 不能把 O_TRUNC, mode 也当成违规。 */
+    const wideOpen = src.match(/O_TRUNC,\s*0o6(?!00)[0-9]{2}/g) || [];
+    const allWrites = src.match(/O_TRUNC/g) || [];
+    const dataIs600 = /DATA_FILE \+ "\.tmp"\)[\s\S]{0,80}?0o600/.test(src);
+    check("后端：数据文件不给 world-readable",
+          dataIs600 && wideOpen.length === 0,
+          "data.json=0600=" + dataIs600 + " 字面量放宽权限的写入=" + wideOpen.length +
+          "（全文共 " + allWrites.length + " 处写入）");
   })();
 
   __report(REPORT, pass, fail);

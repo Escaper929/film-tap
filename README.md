@@ -84,6 +84,35 @@ Cache API、`document.cookie`。服务器用 `Set-Cookie` 下发的 cookie（这
 > 密码就永久留在 Git 历史里 —— 删掉代码也没用，必须改密码 + 重写历史才能挽回。
 > 这条不是假设，这个项目真踩过。`_selftest.js` 里有护栏盯着，但它只能拦形状。
 
+### 提交之前：把 noreply 邮箱设上（一次就够）
+
+**Git 提交里的作者邮箱是公开的。** 不用克隆仓库，任何人敲
+
+```bash
+curl -s https://api.github.com/repos/Escaper929/film-tap/commits | grep email
+```
+
+就能拿到 —— 而且它**永久留在历史里**，删文件没用，只能重写历史。
+
+所以别等到已经泄露了再去改历史，一开始就别用它提交：
+
+```bash
+git config --global user.email "60599586+Escaper929@users.noreply.github.com"
+```
+
+（`id+用户名@users.noreply.github.com`，在你的 GitHub → Settings → Emails
+底下能直接复制。**顺手把那个页面上的 “Keep my email addresses private” 勾上**，
+那是一条额外的保险，就算哪次忘了设也还有兜底。）
+
+> ⚠️ 设一次是不够的：全局配置**不跟着仓库走**。换台机器克隆下来，
+> 或者用另一套 Git（编辑器的内嵌 Git 常常是另一份 `gitconfig`），
+> 那份上没有这个设置，提交又会带上真实邮箱。所以换环境之后
+> 先敲一句 `git config --get user.email` 确认一下再提交。
+
+同一类还要注意但更隐蔽的：文档里的示例路径。写成自己机器的真实路径
+（`/Users/<你的用户名>/...` 或 `C:\Users\<用户名>\...`），就把本机用户名连
+操作系统一起交代了。示例一律写 `/path/to/...`。这几条 `_selftest.js` 都会拦。
+
 ### 有一类上传会被直接拦下来
 
 **「服务端有 N 台机身、送来的这份却是空的」这种上传会把服务端清空**，所以它被直接拒绝
@@ -419,7 +448,8 @@ node _selftest.js      # 全部视图渲染 + 张数 / 装卷 / 库存与导入 
 python _shots.py       # 需先起本地服务，截图输出到 shots/
 
 # 后两个要 playwright，装在工程 venv 里，别直接敲 `python`
-PY=/Users/lh/.workbuddy/binaries/python/envs/default/bin/python
+# （换成你自己的 venv 路径；下面这个只是个例子）
+PY=/path/to/your/venv/bin/python
 $PY _firstrun.py                        # 打线上那个部署，走一遍「空库首次使用」
 $PY _firstrun.py http://127.0.0.1:8123  # 只打本地静态服务（NAS 那几条会自动跳过）
 ```

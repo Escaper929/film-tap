@@ -14,7 +14,7 @@
 
 用法（注意解释器：playwright 装在工程 venv 里，系统 python3 没有）：
 
-    PY=/Users/lh/.workbuddy/binaries/python/envs/default/bin/python
+    PY=/path/to/your/venv/bin/python          # 换成你自己的 venv 路径
     $PY _firstrun.py                            # NAS 上那个部署
     $PY _firstrun.py http://127.0.0.1:8123      # 本地静态服务
 
