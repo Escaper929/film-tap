@@ -18,9 +18,10 @@ const CRED_RULES = [
   [/\b172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}\b/,     "私有网段 172.16–31.x.x"],
   [/WEBDAV_AUTH\s*=\s*['"][^'"]+['"]/,                     "硬编码的 WebDAV 凭据"],
   [/Authorization['"]?\s*[:=]\s*['"]Basic\s+[A-Za-z0-9+/=]{8,}/, "硬编码的 Basic 认证头"],
-  /* GitHub 令牌的形状。项目现在会把数据写进一个私有仓库，所以「令牌被写进源码」
-     成了新的头号风险：ghp_ = classic PAT，gho_ = OAuth，ghs_ = 服务令牌，
-     github_pat_ = fine-grained。只描述形状，不含任何真实值。 */
+  /* GitHub 令牌的形状。项目现在已经**不用**任何 GitHub 令牌了（数据只在
+     自己的 NAS 上），所以这一条从「头号风险」降级成了纵深防御 ——
+     留着是为了拦住「哪天有人图省事又往源码里贴一枚」。
+     ghp_ = classic PAT，gho_ = OAuth，ghs_ = 服务令牌，github_pat_ = fine-grained。 */
   [/\bghp_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub classic 令牌"],
   [/\bgho_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub OAuth 令牌"],
   [/\bghs_[A-Za-z0-9]{20,}/,                               "硬编码的 GitHub 服务令牌"],
@@ -28,13 +29,22 @@ const CRED_RULES = [
 ];
 
 /* 护栏要覆盖仓库里所有发得出去的文本文件。
-   关键：**不能只看站点上打得开的文件**。上次的泄露就发生在 _selftest.js 里 ——
-   GitHub Pages 会跳过下划线开头的文件（站点上 404），但它在公开仓库里照样能拿到。
-   也就是说，真正的暴露面是「仓库可见范围」，不是「站点可访问范围」。 */
+   关键：**暴露面是「仓库可见范围」，不是「站点可访问范围」**。
+   上次的泄露就发生在 _selftest.js 里 —— 那时候这个文件不在站点上（GitHub Pages
+   会跳过下划线开头的文件），但它在公开仓库里照样能拿到。
+
+   现在这个仓库连站点都不是了（页面只从 NAS 上发），可规则没变：**公开仓库里
+   的每个文本文件都是公开的**。所以新加的脚本、工作流、Dockerfile 都要加进来 ——
+   没加进来就等于没护栏，这个坑踩过。
+
+   nas/ 那几项尤其要留着：部署脚本最容易顺手把 NAS 的内网地址和密码写成字面量，
+   而那正是这个护栏要拦的东西。所以 deploy.sh 只接收「主机」当参数，自己不含地址。 */
 const SHIPPED = [
   "index.html", "sw.js", "manifest.webmanifest",
   "README.md", "_selftest.js", "_shots.py", "_firstrun.py",
-  "model/build_fob.py", "model/fob.scad", "model/preview.py", "model/render.py"
+  "model/build_fob.py", "model/fob.scad", "model/preview.py", "model/render.py",
+  "nas/server.py", "nas/deploy.sh", "nas/update.sh",
+  "Dockerfile", ".dockerignore", ".github/workflows/docker.yml"
 ];
 for (const f of SHIPPED) {
   const p = path.join(__dirname, f);
@@ -64,6 +74,9 @@ function el(sel) {
   if (sel.indexOf(" ") >= 0) return null;
   if (!els[sel]) els[sel] = { innerHTML: "", value: "", textContent: "",
                               style: {}, offsetLeft: 0,
+                              // 真元素上一定有的方法。桩缺了它们，
+                              // 「密码框出错时把光标送回去」这种代码就没法测。
+                              focus(){}, select(){},
                               classList: { add(){}, remove(){} } };
   return els[sel];
 }
@@ -135,11 +148,14 @@ const CASES = [
           "常用胶卷 Top","Ilford HP5 Plus 400","机身状态"],
     mustNot:["累计快门"] },
   { name:"设置与备份",  search:"",       hash:"#/settings",
-    must:["导出备份","已登记的机身 ID","?c=","清空全部数据",
-          "同步到自己的 NAS","WebDAV 目录地址","保存同步设置",
-          "同步到私有仓库","访问令牌","保存仓库设置",
-          "验证并登录","建一个私有仓库","建一枚 fine-grained 令牌"],
-    mustNot:["192.168.","WEBDAV_AUTH","Authorization: Basic","Bearer ",
+    must:["导出备份","导入备份","已登记的机身 ID","?c=","清空全部数据",
+          "同步到这台 NAS",
+          "同步到 WebDAV","WebDAV 目录地址","保存同步设置"],
+    /* GitHub 那整套已经拆掉了。下面头几个 mustNot 是**防它偷偷长回来**：
+       页面里再冒出任何一个 GitHub 相关的字眼，都说明有残留没摘干净。
+       （后面几条是凭据形状的老护栏，留着。） */
+    mustNot:["GitHub","github","私有仓库","访问令牌","fine-grained",
+             "192.168.","WEBDAV_AUTH","Authorization: Basic","Bearer ",
              "ghp_","gho_","github_pat_"] }
 ];
 
@@ -255,41 +271,6 @@ try {
   check("总张数留空回落到画幅默认", a && b && c,
         "留空=" + a + " 填0=" + b + " 填24=" + c);
 } catch (e) { check("总张数留空回落到画幅默认", false, "抛异常 " + e.message); }
-
-/* ══════════════════════════════════════════════════════════
-   「验证并登录」按钮必须跟着令牌框亮灭。
-   修的是这个真实故障（用户实测报的）：按钮一直亮着、空着也能点，
-   点完只回一句「先粘一枚令牌」—— 用户分不清是自己没粘上、
-   还是这个功能坏了。在真实浏览器里复现过：框里有东西时代码路径是对的
-   （唯一一个 #gh-token、value 读得到、吐司变成「已登录 @probe」），
-   错的是它**不告诉用户框是空的**。
-   ══════════════════════════════════════════════════════════ */
-try {
-  localStorage.removeItem("filmtap.github");
-  __setLoc("", "#/settings"); render();
-  const html  = __app();
-  const start = html.indexOf('id="gh-verify" disabled') >= 0;
-  const wired = html.indexOf('oninput="syncGhVerifyBtn()"') >= 0;
-
-  __setValue("#gh-token", "");
-  syncGhVerifyBtn();
-  const emptyStaysOff = __el("#gh-verify").disabled === true;
-
-  __setValue("#gh-token", "github_" + "pat_" + "A".repeat(20));
-  syncGhVerifyBtn();
-  const filledLightsUp = __el("#gh-verify").disabled === false;
-
-  /* 粘贴时爱带上换行 / 空格。光看「非空」就点亮的话，一个空格也能把按钮点亮，
-     然后用户拿到一个语焉不详的 401 —— 空白不算内容。 */
-  __setValue("#gh-token", "   \n  ");
-  syncGhVerifyBtn();
-  const blankStaysOff = __el("#gh-verify").disabled === true;
-
-  check("验证按钮跟着令牌亮灭",
-        start && wired && emptyStaysOff && filledLightsUp && blankStaysOff,
-        "初始禁用=" + start + " 挂上 oninput=" + wired + " 空着不亮=" + emptyStaysOff +
-        " 粘了就亮=" + filledLightsUp + " 纯空白不算=" + blankStaysOff);
-} catch (e) { check("验证按钮跟着令牌亮灭", false, "抛异常 " + e.message); }
 
 /* ══════════════════════════════════════════════════════════
    WebDAV 的两个前提，保存时就得挡住。
@@ -614,9 +595,12 @@ try {
     "saveSetup","saveLoad","clearFilm","pickFilm","setFilmFormat","setImportMode",
     "runImport","resetImport","importFromPaste","onImportFile","setImportMap",
     "exportJSON","importJSON",
-    "saveDavFromForm","syncToNas","restoreFromNas","testDav","clearDavSettings","saveGhFromForm",
-    "ghPush","ghPull","toggleGhAuto","clearGhSettings","wipe","exportCorrupt",
-    "verifyGh","listGhRepos","useGhRepo","syncGhVerifyBtn",
+    "saveDavFromForm","syncToNas","restoreFromNas","testDav","clearDavSettings",
+    /* 自建 NAS 那一栏的按钮。这张表必须跟着渲染出来的 onclick 一起长 ——
+       名字漏了一个，被测的那段 JS 就会去全局找真的实现而找不到，于是报「有泄漏」。
+       那个失败看着像注入，其实是这张表过期了，纯噪音。 */
+    "nasLogin","nasLogout","nasPush","nasPull","toggleNasAuto","syncNasLoginBtn",
+    "wipe","exportCorrupt",
     "dropCorrupt","deleteFilm","saveFilm","updatePP","document"];
 
   /* 属性在交给 JS 之前，浏览器会先把 HTML 实体还原成字符 */
@@ -664,7 +648,7 @@ try {
   const ok2 = carried.length >= 1 && carried.every(a => a[0] === EVIL);
 
   /* ② 已经登记过的机身，以及库存里带引号的型号 ——
-     这两条路上的数据可能来自导入的 JSON 或私有仓库，不经过 parseRoute */
+     这两条路上的数据可能来自导入的 JSON 或从 NAS 拉回来的远端数据，不经过 parseRoute */
   const db = load();
   db.cameras[EVIL] = { id:EVIL, name:"坏 ID 的机身", format:"135", history:[],
     loaded:{ stock:"Kodak Portra 400", iso:400, ei:null, loadedAt:todayLocal(),
@@ -689,27 +673,25 @@ try {
     if (runHandlers(__app()).leak) bad.push(v);
   }
 
-  /* 设置页还有两种状态平时渲染不到，得单独扫：
-     ① 已登录且列到了仓库（比未登录那屏多好几个 onclick）
-     ② 登录了但还没选仓库（走「列出我的私有仓库」那条分支）
-     ⚠️ 扫完必须把 filmtap.github 还原 —— 后面「回灌只在空库发生」那些用例
-        依赖「此刻到底有没有配仓库」，留一份假的进去会让它们测出假结果。 */
-  const keepGh = localStorage.getItem("filmtap.github");
+  /* 设置页还有几种状态平时渲染不到，得单独扫：
+     NAS 那一栏有四种排版（还在探 / 不是从 NAS 打开 / 探到了没登录 / 已登录），
+     每种多出来的 onclick 都得过一遍 —— 这一栏里带着用户填的密码框，
+     多一条能注入的路径就是多一个把密码送出去的口子。
+     ⚠️ 扫完必须把 nasState/nasSess 还原 —— 后面「回灌只在空库发生」那些
+        用例依赖「此刻到底在不在 NAS 上」，留一个假状态进去会让它们测出假结果。 */
+  const keepNasState = nasState, keepNasSess = nasSess;
   const STATES = [
-    { note:"已登录+有仓库列表", cfg:{ owner:"o", repo:"r", token:"t", login:"me", auto:false },
-      repos:[{ full_name:"o/r", private:true }] },
-    { note:"登录未选仓库",      cfg:{ token:"t", login:"me", auto:false }, repos:null }
+    { note:"NAS 探到了、未登录", st:"yes", sess:false },
+    { note:"NAS 已登录",        st:"yes", sess:true  },
+    { note:"不是从 NAS 打开",   st:"no",  sess:false }
   ];
   for (const st of STATES){
-    saveGh(st.cfg);
-    ghRepos = st.repos;
+    nasState = st.st; nasSess = st.sess;
     __setLoc("", "#/settings");
     try { render(); } catch (e){ bad.push("#/settings(" + st.note + ",抛异常)"); continue; }
     if (runHandlers(__app()).leak) bad.push("#/settings(" + st.note + ")");
   }
-  ghRepos = null;
-  if (keepGh === null) localStorage.removeItem("filmtap.github");
-  else                 localStorage.setItem("filmtap.github", keepGh);
+  nasState = keepNasState; nasSess = keepNasSess;
 
   const ok3 = bad.length === 0;
 
@@ -880,100 +862,13 @@ try {
 } catch (e) { check("SW 缓存版本同步", false, "抛异常 " + e.message); }
 
 /* ══════════════════════════════════════════════════════════
-   私有仓库同步（GitHub Contents API）—— 需要网络，所以放在异步段里，
-   用打桩的 fetch 跑。验证四件事：中文能完整往返、只有空库才回灌、
-   有数据时一个请求都不发、以及令牌只出现在请求头里绝不进请求体。
+   同步层的通用行为 —— 和具体走哪条路无关，所以放在异步段里用打桩的 fetch 跑。
+   钉两件事：① 整库快照，新字段只要做成 DB 顶层字段就自动跟着走；
+   ② 「只给要发出去的那一份盖时间戳」，不回写本机。
+   ② 修的是一个真实故障：点一次别的同步按钮，却顺带动了另一处存储。
    ══════════════════════════════════════════════════════════ */
 (async () => {
-  let PUTS = [], GETS = 0;
-  const REMOTE = { version: 2, cameras: {
-    r1: { id:"r1", name:"仓库里的机身 禄来 3.5F", format:"120", loaded:null, history:[] }
-  } };
-
-  function stubFetch(remote){
-    PUTS = []; GETS = 0;
-    global.fetch = async (url, opt) => {
-      const method = (opt && opt.method) || "GET";
-      if (method === "PUT"){
-        PUTS.push({ url:String(url), body:JSON.parse(opt.body),
-                    auth:(opt.headers || {}).Authorization });
-        return { ok:true, status:200, json: async () => ({ content:{ sha:"s2" } }) };
-      }
-      GETS++;
-      if (!remote) return { ok:false, status:404, json: async () => ({}) };
-      return { ok:true, status:200,
-               json: async () => ({ content:b64encode(JSON.stringify(remote)), sha:"s1" }) };
-    };
-  }
-
-  /* load() 在新键缺失时会回头读改名前的旧键（filmnfc.v1），
-     而上面的迁移用例往旧键里塞过数据 —— 所以「清空本机」必须两个键一起清，
-     否则本机看着是空的、实际不空，回灌就被正确地拒绝了，测出来像是功能坏了。 */
-  const clearLocal = () => {
-    localStorage.removeItem("filmtap.v1");
-    localStorage.removeItem("filmnfc.v1");
-  };
-
   try {
-    /* ── base64 必须能带中文往返（机身名和备注都是中文）── */
-    const zh = "禄来 3.5F · 富士 C200 · 「推到 1600 拍夜景」";
-    const okB64 = b64decode(b64encode(zh)) === zh;
-    check("base64 中文往返", okB64, okB64 ? zh.length + " 字符原样返回" : "往返不一致");
-
-    /* ── 设置只落本机、令牌留空保留、默认值补齐 ── */
-    __setLoc("", "#/settings"); render();
-    __setValue("#gh-owner", "Escaper929");
-    __setValue("#gh-repo",  "film-tap-data");
-    __setValue("#gh-path",  "");
-    __setValue("#gh-branch","");
-    __setValue("#gh-token", "fine-" + "grained-sample");
-    saveGhFromForm();
-    const g1 = getGh();
-    const okG1 = !!g1 && g1.owner === "Escaper929" && g1.repo === "film-tap-data" &&
-                 g1.path === "data.json" && g1.branch === "main";
-    __setValue("#gh-token", "");
-    saveGhFromForm();
-    const okG2 = getGh().token === "fine-" + "grained-sample";
-    const ui   = __app();
-    const okG3 = ui.indexOf("保存仓库设置") >= 0 && ui.indexOf("立即上传") >= 0 &&
-                 ui.indexOf("从仓库拉取") >= 0 && ui.indexOf("自动同步") >= 0;
-    check("仓库设置本机存储", okG1 && okG2 && okG3,
-          "默认值=" + okG1 + " 留空保留=" + okG2 + " 按钮齐=" + okG3);
-
-    /* ── 本机为空 → 自动回灌；本机有数据 → 一个请求都不发、绝不覆盖 ── */
-    clearLocal();
-    stubFetch(REMOTE);
-    await ghRehydrate();
-    const d1 = load();
-    const okR1 = !!d1.cameras.r1 && d1.cameras.r1.name === "仓库里的机身 禄来 3.5F";
-    const okR2 = d1.cameras.r1.format === "120";
-
-    stubFetch(REMOTE);
-    save({ version:2,
-           cameras:{ mine:{ id:"mine", name:"本机自己的机身",
-                            format:"135", loaded:null, history:[] } },
-           films:{ "kodak-portra-400":{ stock:"Kodak Portra 400", count:12, where:"冰箱" } } });
-    await ghRehydrate();
-    const okR3 = GETS === 0;
-    const d2 = load();
-    const okR4 = !!d2.cameras.mine && !d2.cameras.r1;
-    check("回灌只在空库发生", okR1 && okR2 && okR3 && okR4,
-          "拉回=" + okR1 + " 字段完整=" + okR2 + " 有数据时不请求=" + okR3 + " 未覆盖=" + okR4);
-
-    /* ── 上传：内容对、带 sha、令牌只在请求头 ── */
-    stubFetch(REMOTE);
-    const okP1 = await ghPush(true);
-    const put  = PUTS[PUTS.length - 1];
-    const sent = JSON.parse(b64decode(put.body.content));
-    const okP2 = !!sent.cameras.mine && !sent.cameras.r1;
-    const okP3 = put.body.sha === "s1" && put.body.branch === "main";
-    const okP4 = put.auth === "Bearer " + getGh().token;
-    const okP5 = put.body.content.indexOf("fine-") < 0;      // 令牌绝不能混进请求体
-    const okP6 = !!(sent.films && sent.films["kodak-portra-400"].count === 12);
-    check("上传内容与令牌不外泄", okP1 && okP2 && okP3 && okP4 && okP5 && okP6,
-          "成功=" + okP1 + " 内容对=" + okP2 + " 带sha=" + okP3 +
-          " 只在头=" + okP4 + " 不进body=" + okP5 + " 库存跟着走=" + okP6);
-
     /* ── 同步层是「整库快照」，它不认识任何业务字段 ──
        以后往库里加新东西（比如胶卷库存 films），只要做成 DB 的顶层字段，
        就自动获得：上传、空库回灌、JSON 导出导入、NAS 同步，一行同步代码都不用改。
@@ -989,46 +884,34 @@ try {
     check("新字段自动跟着同步", okF1 && okF2 && okF3,
           "活过 load/save=" + okF1 + " 活过 normalize=" + okF2 + " 进导出=" + okF3);
 
-    /* ── 自动同步开关的语义 ── */
-    let g = getGh(); g.auto = false; saveGh(g);
-
-    clearLocal();
-    stubFetch(REMOTE);
-    await ghRehydrate();
-    const okA1 = !!load().cameras.r1;                        // 关着也回灌：防丢数据的底线
-
-    let queued = null;
-    const realSetTimeout = global.setTimeout;
-    global.setTimeout = (fn) => { queued = fn; return 1; };
-    const putCount = PUTS.length;
-    save(load());
-    const okA2 = queued === null;                            // 关着不排队
-    const okA3 = PUTS.length === putCount;                   // 关着不上传
-
-    g = getGh(); g.auto = true; saveGh(g);
-    queued = null;
-    save(load());
-    global.setTimeout = realSetTimeout;
-    const okA4 = typeof queued === "function";               // 开着会排队
-    if (okA4) await queued();
-    const okA5 = PUTS.length === putCount + 1;               // 排队的那次真的发出去了
-    check("自动同步开关语义", okA1 && okA2 && okA3 && okA4 && okA5,
-          "关着也回灌=" + okA1 + " 关着不排队=" + okA2 + " 关着不上传=" + okA3 +
-          " 开着排队=" + okA4 + " 开着上传=" + okA5);
-
-    /* ── 点「同步到 NAS」不该顺带动私有仓库 ──
+    /* ── 点「同步到 NAS」（WebDAV 那条路）不该顺带把数据推给自建后端 ──
        早先 syncToNas() 先把 savedAt 写回本机再 save()，而 save() 在「自动同步」
-       开着时会排一次上传 —— 用户点的是 NAS 那个按钮，动到的却是 GitHub 那个仓库。
+       开着时会排一次上传 —— 用户点的是 WebDAV 那个按钮，动到的却是另一处存储。
 
-       ⚠️ 不能靠 await flushGhPush() 来收尾：这个自检把 setTimeout 桩成了 () => 0，
-          于是 flushGhPush 里的「有没有排队」永远为假，测试会**假装通过**。
+       ⚠️ 不能靠 await flushNasPush() 来收尾：这个自检把 setTimeout 桩成了 () => 0，
+          于是 flush 里的「有没有排队」永远为假，测试会**假装通过**。
           所以这里自己把窗口里排上的回调全抓下来跑掉 —— 真排了上传的话，
-          这一跑就会打到 api.github.com。
+          这一跑就会打到 /api/data。
           ⚠️ 不能只看「抓到回调没有」：toast() 自己也用 setTimeout，
-             抓到它纯属正常。判定必须落到「那个 PUT 去了哪个域名」。 */
+             抓到它纯属正常。判定必须落到「那个 PUT 去了哪个路径」。 */
+    const realSetTimeout = global.setTimeout;
+    const PUTS = [];
+    global.fetch = async (url, opt) => {
+      const method = ((opt && opt.method) || "GET").toUpperCase();
+      const u = String(url);
+      if (method === "PUT"){
+        PUTS.push({ url:u, body:JSON.parse(opt.body) });
+        if (u.indexOf("/api/") >= 0)
+          return { ok:true, status:200, json: async () => ({ ok:true, rev:"rev-x" }) };
+        return { ok:true, status:201, json: async () => ({}) };
+      }
+      return { ok:true, status:200, json: async () => ({ data:null, rev:null }) };
+    };
+
     saveDav({ url:"https://nas.example.com/dav/film/", user:"u", pass:"p" });
-    g = getGh(); g.auto = true; saveGh(g);
-    stubFetch(REMOTE);
+    /* 自建后端那一路的自动同步得是**开着**的 —— 关着的话「没上传」什么也证明不了。 */
+    saveNas({ auto:true });
+    nasState = "yes"; nasSess = true;
 
     const pending = [];
     global.setTimeout = (fn) => { pending.push(fn); return 1; };
@@ -1036,160 +919,16 @@ try {
     global.setTimeout = realSetTimeout;
     for (const fn of pending){ try{ await fn(); }catch(e){} }
 
-    const wentNas = PUTS.some(p => p.url.indexOf("nas.example.com") >= 0);
-    const wentGh  = PUTS.filter(p => p.url.indexOf("api.github.com") >= 0).length;
-    const okN1 = wentNas && wentGh === 0;
+    const wentDav = PUTS.some(p => p.url.indexOf("nas.example.com") >= 0);
+    const wentApi = PUTS.filter(p => p.url.indexOf("/api/") >= 0).length;
+    const okN1 = wentDav && wentApi === 0;
     const okN2 = load().savedAt == null;          // savedAt 也不该被写进本机
-    check("NAS 同步不触达私有仓库", okN1 && okN2,
-          "写到 NAS=" + wentNas + " 写仓库次数=" + wentGh + " 本机无 savedAt=" + okN2);
+    check("WebDAV 同步不触达自建 NAS", okN1 && okN2,
+          "写到 WebDAV=" + wentDav + " 写 /api/ 次数=" + wentApi + " 本机无 savedAt=" + okN2);
 
-    clearGh();
-    const okC = getGh() === null;
-    check("仓库设置可清除", okC, "清掉=" + okC);
-
-    /* ── 「验证并登录」：把一枚令牌换成身份，数据仓库从列表里选 ──
-       这条路的存在意义就是「陌生人不用手打 owner / repo」。所以两个性质必须钉住：
-       ① 验证通过只说明「这枚令牌是谁的」，**没选仓库之前同步层不能认它** ——
-          否则会拿一份缺 owner/repo 的配置去拼 api.github.com 的地址；
-       ② 列不出仓库时必须能退回手填，不能把用户卡在这一屏。 */
-    clearGh();
-    ghRepos = null;
-
-    const PAT   = "fine-" + "grained-sample";
-    const ME    = { login:"octocat", name:"Mona Lisa",
-                    avatar_url:"https://avatars.example.com/u/1" };
-    const REPOS = [
-      { full_name:"octocat/film-tap-data", private:true  },
-      { full_name:"octocat/blog",          private:false },
-      { full_name:"octocat/film-tap-bak",  private:true  }
-    ];
-    /* 「远程仓库里的数据」+ 它被读了几次 —— 后半段要用次数证明
-       「本机有数据时不会去读远端」，而不是只看结果对不对。 */
-    const REMOTE_DB = { version:2, films:{}, cameras:{
-      x1:{ id:"x1", name:"仓库里的机器", format:"135", loaded:null, history:[] } } };
-    let contentsGets = 0;
-
-    const ghStub = reposOk => async (url, opt) => {
-      const u = String(url), h = (opt && opt.headers) || {};
-      if (h.Authorization !== "Bearer " + PAT) return { ok:false, status:401, json: async()=>({}) };
-      if (u.indexOf("/user/repos") >= 0) {
-        return reposOk ? { ok:true, status:200, json: async()=>REPOS }
-                       : { ok:false, status:403, json: async()=>({}) };
-      }
-      if (u.indexOf("/user") >= 0) return { ok:true, status:200, json: async()=>ME };
-      if (u.indexOf("/contents/") >= 0) {
-        contentsGets++;
-        return { ok:true, status:200,
-                 json: async()=>({ content:b64encode(JSON.stringify(REMOTE_DB)), sha:"s9" }) };
-      }
-      return { ok:false, status:404, json: async()=>({}) };
-    };
-
-    __setLoc("", "#/settings"); render();
-    global.fetch = ghStub(true);
-    __setValue("#gh-token", PAT);
-    await verifyGh();
-
-    const who  = getGhRaw();
-    const okL1 = !!who && who.login === "octocat" && who.avatar === ME.avatar_url;
-    const okL2 = getGh() === null;                 // 还没选仓库 → 同步层不认
-
-    render();
-    const uiL  = __app();
-    const okL3 = uiL.indexOf("gh-pick") >= 0 && uiL.indexOf("octocat/film-tap-data") >= 0;
-    /* 公开仓库不能列进来 —— 数据进公开仓库等于把机身和胶卷清单公开 */
-    const okL4 = uiL.indexOf("octocat/blog") < 0 && uiL.indexOf("octocat/film-tap-bak") >= 0;
-
-    __setValue("#gh-pick", "octocat/film-tap-data");
-    await useGhRepo();
-    const gd   = getGh();
-    const okL5 = !!gd && gd.owner === "octocat" && gd.repo === "film-tap-data" &&
-                 gd.path === "data.json" && gd.branch === "main" && gd.login === "octocat";
-
-    /* fine-grained 令牌只勾了一个仓库时，GitHub 可能不给列 → 退回手填，不卡死 */
-    ghRepos = null;
-    global.fetch = ghStub(false);
-    await listGhRepos();
-    const okL6 = Array.isArray(ghRepos) && ghRepos.length === 0;
-
-    /* 手填那条路：令牌已经存着了，不该被要求再粘一次 */
-    __setLoc("", "#/settings"); render();
-    __setValue("#gh-owner",  "octocat");
-    __setValue("#gh-repo",   "film-tap-data-2");
-    __setValue("#gh-path",   "");
-    __setValue("#gh-branch", "");
-    __setValue("#gh-token",  "");
-    saveGhFromForm();
-    const g2   = getGh();
-    const okL7 = !!g2 && g2.repo === "film-tap-data-2" && g2.token === PAT &&
-                 g2.path === "data.json" && g2.login === "octocat";
-
-    check("登录拿身份 / 选仓库", okL1 && okL2 && okL3 && okL4 && okL5 && okL6 && okL7,
-          "身份=" + okL1 + " 未选仓库不认=" + okL2 + " 下拉出仓库=" + okL3 +
-          " 只列私有=" + okL4 + " 选中落配置=" + okL5 + " 列不出不炸=" + okL6 +
-          " 手填不重粘令牌=" + okL7);
-
-    /* ── 「本机空 + 仓库非空」这一次上传必须被拦下 ──
-       整库快照后写赢、没有合并，这一下就是**把仓库清空**。
-       真实路径：本机存储被系统清了（或换了台设备打开），用户随手记一台就冲掉仓库，
-       而且不报任何错。自检里这条也顺带守着「别为了拦它把正常上传一起拦掉」。
-
-       ⚠️ 断言要落在「有没有真的发出 PUT」上，不能只看返回值 ——
-          返回 false 但请求已经发出去，是另一种更隐蔽的坏法。 */
-    saveGh({ owner:"o", repo:"r", token:PAT, path:"data.json", branch:"main", auto:false });
-    clearLocal();
-    stubFetch(REMOTE);
-    const putBefore  = PUTS.length;
-    const okE1 = (await ghPush(false)) === false;
-    const okE2 = PUTS.length === putBefore;          // 一个字节都没发出去
-
-    /* 这道闸必须够窄：本机有数据时照旧能传上去 */
-    save({ version:2, films:{},
-           cameras:{ a:{ id:"a", name:"甲", format:"135", loaded:null, history:[] } } });
-    stubFetch(REMOTE);
-    const okE3 = (await ghPush(true)) === true;
-    const okE4 = PUTS.length === 1;
-
-    /* 但「清空全部数据 → 连仓库一起清」必须放行 —— 那条路本来就是先清本机
-       再推一份空的上去，正好命中「本机空、仓库非空」。
-       不放行的话那个功能会**静默失效**：用户点了两次确定，仓库里却还留着。 */
-    clearLocal();
-    stubFetch(REMOTE);
-    const okE5 = (await ghPush(false, true)) === true;
-    const okE6 = PUTS.length === 1;
-
-    check("空库不会清空仓库", okE1 && okE2 && okE3 && okE4 && okE5 && okE6,
-          "被拦=" + okE1 + " 没发请求=" + okE2 + " 有数据照传=" + okE3 + " 只发一次=" + okE4 +
-          " 明确清空放行=" + okE5 + " force 只发一次=" + okE6);
-
-    /* ── 新设备：粘令牌 → 选仓库之后，数据得自己回来 ──
-       自动回灌原本只在页面启动时跑一次，所以这条流程会停在「连上了、但一台机身都没有」，
-       看着像没成功。触发点补在「选完仓库」那一刻。
-       下半段用**读取次数**证明它没有越界：本机有数据时一次远端都不该读。 */
-    clearGh(); ghRepos = null; clearLocal();
-    saveGh({ token:PAT, login:"octocat", auto:false });
-    global.fetch = ghStub(true);
-    contentsGets = 0;
-    __setValue("#gh-pick", "octocat/film-tap-data");
-    await useGhRepo();
-    const okD1 = !!load().cameras.x1;
-    const okD2 = contentsGets === 1;
-
-    /* 本机已经有数据 → 这次连接绝不能被远端覆盖掉 */
-    save({ version:2, films:{},
-           cameras:{ mine:{ id:"mine", name:"本机自己的", format:"135", loaded:null, history:[] } } });
-    saveGh({ owner:"octocat", repo:"film-tap-data", token:PAT,
-             path:"data.json", branch:"main", auto:false });
-    global.fetch = ghStub(true);
-    contentsGets = 0;
-    await useGhRepo();
-    const after = load().cameras;
-    const okD3 = !!after.mine && !after.x1;
-    const okD4 = contentsGets === 0;
-
-    check("新设备选完仓库自动拉回", okD1 && okD2 && okD3 && okD4,
-          "拉回来了=" + okD1 + " 只读一次远端=" + okD2 +
-          " 有数据不覆盖=" + okD3 + " 有数据不读远端=" + okD4);
+    /* 后面 NAS 那批用例自己会摆状态，这里把它们还原成「不在 NAS 上」。 */
+    clearNasRev();
+    nasState = "no"; nasSess = false;
 
     /* ══════════════════════════════════════════════════════════
        WebDAV 的三层诊断。
@@ -1246,8 +985,228 @@ try {
           "网络/证书不通=" + w1 + " 提到证书=" + w5 + " 跨域被拦=" + w2 +
           " 无备份=" + w3 + " 密码错=" + w4);
   } catch (e) {
-    check("私有仓库同步", false, "抛异常 " + e.message);
+    check("同步层通用行为", false, "抛异常 " + e.message);
   }
+
+  /* ══════════════════════════════════════════════════════════
+     自建 NAS 后端（同源 /api/*）。
+     这条路和上面两条最大的不同只有一处，但结果差很远：
+     **登录态住在服务器下发的 cookie 里，而不是住在 localStorage 里。**
+     浏览器「闲置 7 天清空存储」清的是脚本能写的那些（localStorage /
+     IndexedDB / Cache API / document.cookie）；Set-Cookie 下发的 cookie
+     不在清理范围内 —— 所以「本机被清空后自动恢复」这次是真的。
+     自检钉的就是这条链子上的每一环，外加一条独立规矩：**密码绝不许落盘**。
+     ══════════════════════════════════════════════════════════ */
+  await (async () => {
+    try {
+      const NST = { sess:false, data:null, rev:null, puts:0, reject:null, noApp:false };
+      const NCALLS = [];
+      const NR = (obj, code) => ({ ok: code >= 200 && code < 300, status: code,
+                                   json: async () => obj });
+      /* 密码运行时拼出来，不在文件里留下一个可命中的字面量 ——
+         这个文件本身就在护栏的扫描范围内。 */
+      const NPW = "correct" + "-horse-" + "battery";
+
+      global.fetch = async (url, opt) => {
+        const path = String(url), method = ((opt && opt.method) || "GET").toUpperCase();
+        NCALLS.push({ path, method, opt: opt || {} });
+
+        if (path === "/api/health")
+          return NST.noApp ? NR({ app:"somebody-else" }, 200)
+                           : NR({ app:"film-tap", ok:true, configured:true }, 200);
+        if (path === "/api/session")
+          /* 注意：真实后端这里回的是 200 + {ok:false}，不是 401。
+             「现在是谁」的答案可以是「没人」，回 401 的话浏览器会把每次
+             未登录打开页面都记成一条 console error。 */
+          return NR({ ok:NST.sess }, 200);
+        if (path === "/api/login"){
+          if (JSON.parse(opt.body).password !== NPW)
+            return NR({ error:"bad_password", message:"密码不对" }, 401);
+          NST.sess = true;
+          return NR({ ok:true }, 200);
+        }
+        if (path === "/api/data" && method === "GET"){
+          if (!NST.sess) return NR({ error:"unauthorized" }, 401);
+          return NR({ data:NST.data, rev:NST.rev }, 200);
+        }
+        if (path === "/api/data" && method === "PUT"){
+          if (!NST.sess) return NR({ error:"unauthorized" }, 401);
+          if (NST.reject === "stale")
+            return NR({ error:"stale", rev:NST.rev,
+                        message:"数据在别处被改过，先拉一次再传" }, 409);
+          if (NST.reject === "empty")
+            return NR({ error:"not_empty_overwrite", remote:3,
+                        message:"服务端有 3 台机身，这份是空的 —— 先拉一次对齐" }, 409);
+          NST.data = JSON.parse(opt.body).data;
+          NST.rev  = "rev-next"; NST.puts++;
+          return NR({ ok:true, rev:NST.rev }, 200);
+        }
+        return NR({ error:"not found" }, 404);
+      };
+
+      /* ── ① 探活认的是后端**自报的身份**，不是「这个路径返回了 200」 ──
+         别的服务恰好也有 /api/health 时，不能把它的应答当成我们的后端。 */
+      nasState = "unknown";
+      NST.noApp = true;  const other = await nasHealth();
+      NST.noApp = false; const mine  = await nasHealth();
+      check("NAS：探活认自报身份",
+            other === null && !!mine && mine.app === "film-tap",
+            "别人的 /api/health 不认=" + (other === null) + " 自己的认=" + !!mine);
+
+      /* ── ② 「密码错」必须和「连不上」分开说 ──
+         混成一句「连不上」的话，用户会跑去查一个根本没坏的网络 ——
+         这个项目上一轮就是在修这类误判。 */
+      localStorage.removeItem(NAS_KEY);
+      nasSess = false; nasState = "yes";
+      __setValue("#nas-pass", "wrong-" + "password");
+      await nasLogin();
+      const tBad = __el("#toast").textContent;
+      const saysWrong  = /密码不对/.test(tBad);
+      const notNetwork = !/连不上/.test(tBad);
+
+      /* ── ③ 密码绝不许落盘 ── */
+      __setValue("#nas-pass", NPW);
+      await nasLogin();
+      const dumped = JSON.stringify(localStorage.getItem(NAS_KEY) || "");
+      const noPwOnDisk = dumped.indexOf(NPW) < 0;
+      const sessOn     = nasSess === true;
+      const boxCleared = __el("#nas-pass").value === "";
+      check("NAS：密码错≠连不上，也不落盘",
+            saysWrong && notNetwork && noPwOnDisk && sessOn && boxCleared,
+            "说密码不对=" + saysWrong + " 没混成网络问题=" + notNetwork +
+            " 本机不存密码=" + noPwOnDisk + " 会话建立=" + sessOn + " 输完即清空=" + boxCleared);
+
+      /* ── ④ 请求必须是**同源相对路径**，且带上 cookie ──
+         路径里写死域名的话，换个域名（或从局域网直连）就整条断掉；
+         credentials 不是 same-origin 的话，服务器下发的会话根本发不回去。 */
+      const bad = NCALLS.filter(c =>
+        c.path.indexOf("/api/") !== 0 || c.opt.credentials !== "same-origin");
+      check("NAS：请求同源且带 cookie",
+            NCALLS.length > 0 && bad.length === 0,
+            bad.length ? ("有 " + bad.length + " 个请求不对：" + bad[0].path)
+                       : (NCALLS.length + " 个请求全部是 /api/ 相对路径 + same-origin"));
+
+      /* ── ⑤ 回灌的两条硬规矩：只在**本机为空**时动手，本机有数据一个请求都不发 ── */
+      NST.data = { version:2, cameras:{
+        r1:{ id:"r1", name:"NAS 上的机身 禄来 3.5F", format:"120", loaded:null, history:[] }
+      }, films:{} };
+      NST.rev = "rev-1";
+      localStorage.removeItem("filmtap.v1");
+      localStorage.removeItem(NAS_KEY);
+
+      NCALLS.length = 0;
+      const back = await nasRehydrate();
+      const gotBack = Object.keys(load().cameras).length === 1 &&
+                      load().cameras.r1.name === "NAS 上的机身 禄来 3.5F";
+
+      NCALLS.length = 0;
+      const again = await nasRehydrate();          // 本机已有数据
+      check("NAS：回灌仅在本机为空时",
+            back === true && gotBack && again === false && NCALLS.length === 0,
+            "拉回来=" + gotBack + " 本机有数据时不请求=" + (NCALLS.length === 0));
+
+      /* ── ⑥ 上传：带上「我上次读到的版本」，服务端据此判断别处有没有改过 ── */
+      NCALLS.length = 0;
+      NST.puts = 0;
+      await nasPush(false);
+      const put = NCALLS.find(c => c.method === "PUT");
+      const sentRev = put ? JSON.parse(put.opt.body).rev : "<无请求>";
+      const sentSavedAt = put ? !!JSON.parse(put.opt.body).data.savedAt : false;
+      const localClean  = load().savedAt === undefined;   // savedAt 不能回写本机，否则 save→上传→save 成环
+      check("NAS：上传带版本号",
+            NST.puts === 1 && sentRev === "rev-1" && sentSavedAt && localClean,
+            "发了一次=" + (NST.puts === 1) + " 带 rev=" + sentRev +
+            " 带 savedAt=" + sentSavedAt + " 本机不落 savedAt=" + localClean);
+
+      /* ── ⑦ 两种 409 都要说出来，不能吃掉 ── */
+      NST.reject = "stale";   await nasPush(true);
+      const tStale = __el("#toast").textContent;
+      NST.reject = "empty";   await nasPush(true);
+      const tEmpty = __el("#toast").textContent;
+      NST.reject = null;
+      check("NAS：两种 409 都拦下并说明",
+            /别处被改过/.test(tStale) && /3 台机身/.test(tEmpty),
+            "别处改过=" + /别处被改过/.test(tStale) + " 会被清空时说清台数=" + /3 台机身/.test(tEmpty));
+
+      /* ── ⑧ 会话失效：**不弹提示**，让界面自己退回未登录那一屏 ──
+         它是自动同步那条路上的失败，每次都弹的话会一边写一边刷屏。
+         ⚠️ 这里要让「本机以为还登录着、服务端已经不认了」——
+         只把服务端那边关掉，否则 nasPush 会在发请求之前就返回，
+         那条 401 分支根本走不到。 */
+      nasSess = true; NST.sess = false;
+      __el("#toast").textContent = "哨兵";
+      await nasPush(true);
+      const quietOn401 = __el("#toast").textContent === "哨兵" && nasSess === false;
+      check("NAS：会话失效不刷屏",
+            quietOn401, "没弹提示=" + (__el("#toast").textContent === "哨兵") +
+                        " 会话标记已清=" + (nasSess === false));
+
+      /* ── ⑨ 这是整条路的重点：**本机被清空之后，用户一步都不用做** ──
+         模拟 Safari 闲置清理：数据和一些本机偏好都没了，
+         但会话是服务器下发的 cookie —— 它不在那次清理范围内，还在。
+         重跑一次启动路径，数据应该自己回来。 */
+      NST.sess = true;
+      NST.data = { version:2, cameras:{
+        r1:{ id:"r1", name:"NAS 上的机身 禄来 3.5F", format:"120", loaded:null, history:[] },
+        r2:{ id:"r2", name:"NAS 上的机身 Leica M6",   format:"135", loaded:null, history:[] }
+      }, films:{} };
+      NST.rev = "rev-2";
+      localStorage.removeItem("filmtap.v1");
+      localStorage.removeItem(NAS_KEY);
+      nasState = "unknown"; nasSess = false;
+
+      await nasBoot();
+      const healed = Object.keys(load().cameras).length === 2;
+      const saidIt = /已从 NAS 恢复 2 台机身/.test(__el("#toast").textContent);
+      check("NAS：清空后自动恢复",
+            healed && saidIt && nasSess === true,
+            "数据自己回来=" + healed + " 提示说清台数=" + saidIt + " 会话还活着=" + (nasSess === true));
+
+      /* ── ⑩ 设置页那一栏的排版，以及「空着就点不动」 ── */
+      __setLoc("", "#/settings");
+      nasState = "yes"; nasSess = false;
+      render();
+      let h = __app();
+      const showPass = h.indexOf('id="nas-pass"') >= 0;
+      const startOff = h.indexOf('id="nas-login" disabled') >= 0;
+      const wired    = h.indexOf('oninput="syncNasLoginBtn()"') >= 0;
+
+      __setValue("#nas-pass", "");
+      syncNasLoginBtn();
+      const emptyOff = __el("#nas-login").disabled === true;
+      __setValue("#nas-pass", "   \n ");
+      syncNasLoginBtn();
+      const blankOff = __el("#nas-login").disabled === true;   // 纯空白不算内容
+      __setValue("#nas-pass", "x");
+      syncNasLoginBtn();
+      const lightsUp = __el("#nas-login").disabled === false;
+
+      nasSess = true;
+      saveNas({ at:"2026-09-27T07:30:00Z" });
+      render();
+      h = __app();
+      const loggedIn = h.indexOf("立即存到 NAS") >= 0 && h.indexOf("从 NAS 恢复") >= 0;
+      const showsAt  = h.indexOf("2026-09-27 07:30 UTC") >= 0;
+      const stillNoPw = h.indexOf(NPW) < 0;
+      check("NAS：设置页排版与按钮",
+            showPass && startOff && wired && emptyOff && blankOff && lightsUp &&
+            loggedIn && showsAt && stillNoPw,
+            "密码框=" + showPass + " 初始禁用=" + startOff + " 空着不亮=" + emptyOff +
+            " 纯空白不算=" + blankOff + " 输了就亮=" + lightsUp +
+            " 已登录排版=" + loggedIn + " 显示上次同步=" + showsAt + " 页面无密码=" + stillNoPw);
+
+      /* ── ⑪ 不是从 NAS 打开时，整栏收起，不留半个入口 ── */
+      nasState = "no"; nasSess = false;
+      render();
+      h = __app();
+      const collapsed = h.indexOf("只在页面") >= 0 && h.indexOf('id="nas-login"') < 0 &&
+                        h.indexOf('id="nas-pass"') < 0;
+      check("NAS：不在 NAS 上时收起", collapsed,
+            collapsed ? "只留一句说明，没有密码框和按钮" : "还留了入口");
+    } catch (e) {
+      check("NAS 自建后端", false, "抛异常 " + e.message);
+    }
+  })();
 
   __report(REPORT, pass, fail);
 })();

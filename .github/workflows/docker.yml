@@ -1,0 +1,150 @@
+name: 构建镜像
+
+# 这个仓库不是网站了 —— 它只是一个容器镜像的源。
+# push 到 main 就出镜像，NAS 上的 watchtower 会把新镜像拉下来重建容器。
+#
+# 三道门，缺一不可：
+#   ① 构建**之前**跑 node _selftest.js。它是这里唯一能发现
+#      「改了 index.html 却忘了同步 sw.js 的 SHELL_FP」的地方 ——
+#      那个错漏会让线上是新版、手机上永远停在旧版，而且**不报任何错**。
+#   ② 构建之后再拿真镜像起一个容器，走一遍「探活 → 设密码 → 登录 → 存 → 读」。
+#      这一步能抓到 COPY 漏了文件（镜像起不来）、或者 .dockerignore
+#      手滑把 server.py 挡掉这类事故 —— 光看构建成功是看不出来的。
+#   ③ 镜像只在自检过了之后才 push。
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/escaper929/film-tap
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ① 自检。PR 上只跑到这儿就够 —— 没必要为一次改动烧一个镜像。
+      - name: 自检（结构 / 指纹 / 凭据护栏）
+        run: node _selftest.js
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 算标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,prefix=sha-,format=short
+
+      - name: 构建并推送
+        id: build
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # PR 也要能验证镜像真的能用，所以本地构建一份（不推）。
+      - name: 构建（仅本地，PR 用）
+        id: build_local
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: film-tap:pr
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ② 拿真镜像跑一遍完整流程。这一步才是「镜像能用」的证据。
+      - name: 冒烟 —— 真镜像起容器，探活 / 设密码 / 登录 / 存 / 读
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DIGEST:-}" ]; then
+            IMG="${IMAGE}@${DIGEST}"
+          else
+            IMG="film-tap:pr"
+          fi
+          echo "被测镜像：$IMG"
+
+          # 只挂一个匿名卷，不挂宿主机目录 —— 要验的就是「镜像自己装得下」
+          docker run -d --name smoke -p 18300:8300 "$IMG"
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18300/api/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          H=$(curl -fsS http://127.0.0.1:18300/api/health)
+          echo "health: $H"
+          echo "$H" | grep -q '"app": *"film-tap"'
+          # 镜像里 FT_ASSUME_HTTPS=1 是默认值 —— 部署形态永远是反代后面，
+          # 少给这一条 cookie 就没有 Secure。
+          echo "$H" | grep -q '"https": *true'
+
+          # 设密码：非交互模式下它会读两行同样的密码
+          printf 'smoke-password\nsmoke-password\n' \
+            | docker exec -i smoke python3 /app/server.py --set-password
+          curl -fsS http://127.0.0.1:18300/api/health | grep -q '"configured": *true'
+
+          curl -fsS -c /tmp/jar -X POST http://127.0.0.1:18300/api/login \
+            -H 'Content-Type: application/json' \
+            -d '{"password":"smoke-password"}' | grep -q '"ok": *true'
+
+          curl -fsS -b /tmp/jar -X PUT http://127.0.0.1:18300/api/data \
+            -H 'Content-Type: application/json' \
+            -d '{"data":{"cameras":{"m6":{"id":"m6","name":"冒烟"}}}}' | grep -q '"ok": *true'
+          curl -fsS -b /tmp/jar http://127.0.0.1:18300/api/data | grep -q '"m6"'
+
+          # 静态页面也在镜像里（server.py 之外那三个文件）
+          curl -fsS http://127.0.0.1:18300/ | grep -q 'id="app"'
+          curl -fsS http://127.0.0.1:18300/sw.js | grep -q 'SHELL_FP'
+
+          # 没登录拿不到数据（护住数据的底线）
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18300/api/data)
+          echo "未登录读数据：$code"
+          [ "$code" = "401" ]
+
+          docker logs smoke
+          docker rm -f smoke
+
+      - name: 失败时把容器日志捞出来
+        if: failure()
+        run: docker logs smoke || true

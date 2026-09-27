@@ -322,7 +322,7 @@ let syncArmed = false;
 function save(d){
   try{ localStorage.setItem(KEY, JSON.stringify(d)); }
   catch(e){ toast("存储写入失败，可能是隐私模式"); }
-  if (syncArmed) scheduleGhPush();
+  if (syncArmed){ scheduleNasPush(); }
 }
 
 /* ══════════════ 小工具 ══════════════ */
@@ -335,7 +335,7 @@ function esc(s){
 }
 
 /* 把一段文本安全地放进「HTML 属性里的 JS 字符串」。
-   机身 ID 有三个入口：URL 上的 ?c=、导入的 JSON、私有仓库里的远端数据 ——
+   机身 ID 有三个入口：URL 上的 ?c=、导入的 JSON、从 NAS 拉回来的远端数据 ——
    后两个都不过 parseRoute，所以不能只在那一道口子上过滤。
 
    这里不能用 esc()：它把 ' 换成 &#39;，HTML 解析器读属性时又把它还原成 '，
@@ -1180,7 +1180,7 @@ function renderFilms(db){
   h += '<div style="height:16px"></div>';
   h += '<button class="btn primary" onclick="go(\'#/films/new\')">＋ 添加一款胶卷</button>';
   h += '<button class="btn" onclick="go(\'#/films/import\')">从表格导入（CSV）</button>';
-  h += '<div class="foot">库存是数据库的一个顶层字段，<br>跟着相机数据一起同步到私有仓库</div>';
+  h += '<div class="foot">库存是数据库的一个顶层字段，<br>跟着相机数据一起打包备份</div>';
   return h;
 }
 
@@ -1432,34 +1432,6 @@ function runImport(){
   go("#/films");
 }
 
-/* 手动填仓库。它是「列不出仓库」时的退路，不是主路径 ——
-   但绝不能去掉：fine-grained 令牌只勾一个仓库时，GitHub 可能不给列。
-
-   withToken 决定要不要渲染令牌框。**同一个页面里 #gh-token 只能有一个** ——
-   querySelector 只认第一个，多渲染一个就会出现「明明填了却读不到」的鬼故事。
-   没登录时令牌框在卡片里当主入口，登录之后才挪进这块。 */
-function ghManualForm(c, withToken){
-  let h = '';
-  h += '<label>仓库所有者</label>'
-     + '<input id="gh-owner" placeholder="例如 Escaper929" autocomplete="off" spellcheck="false" value="'
-     + esc(c && c.owner ? c.owner : "") + '">';
-  h += '<label>仓库名</label>'
-     + '<input id="gh-repo" placeholder="例如 film-tap-data" autocomplete="off" spellcheck="false" value="'
-     + esc(c && c.repo ? c.repo : "") + '">';
-  h += '<label>文件路径</label>'
-     + '<input id="gh-path" autocomplete="off" spellcheck="false" placeholder="' + GH_DEFAULT_PATH
-     + '" value="' + esc(c && c.path ? c.path : "") + '">';
-  h += '<label>分支</label>'
-     + '<input id="gh-branch" placeholder="main" autocomplete="off" spellcheck="false" value="'
-     + esc(c && c.branch ? c.branch : "") + '">';
-  if (withToken){
-    h += '<label>访问令牌</label>'
-       + '<input id="gh-token" type="password" autocomplete="new-password" placeholder="'
-       +   (c && c.token ? "已保存，留空就不改" : "粘贴 fine-grained token") + '">';
-  }
-  return h;
-}
-
 function renderSettings(db){
   const n = Object.keys(db.cameras).length;
   let h = navBack("机库", "#/");
@@ -1471,14 +1443,19 @@ function renderSettings(db){
      + '<button class="btn" onclick="exportJSON()">导出备份（JSON）</button>'
      + '<button class="btn" onclick="importJSON()">导入备份</button>'
      + '<div class="hint">数据默认只存在这台设备的浏览器里。换手机、清缓存之前先导一份出来。'
-     + '下面配了 NAS 或私有仓库的话，那两处也会各兜住一份。</div>';
+     + '下面配了这台 NAS 或 WebDAV 的话，那两处也会各兜住一份。</div>';
+
+  h += renderNasSection();
 
   const dav = getDav();
-  h += '<h2>同步到自己的 NAS（可选）</h2>';
+  h += '<h2>同步到 WebDAV（可选）</h2>';
   h += '<div class="card" style="padding:16px 18px">';
   h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
      + '填一个 WebDAV 目录地址，就能把数据备份到自己的 NAS（群晖、坚果云等都支持）。'
-     + '地址和账号只留在这台设备上，<b>不会写进代码，也不会随网页发布出去</b>。</div>';
+     + '地址和账号只留在这台设备上，<b>不会写进代码，也不会随网页发布出去</b>。<br>'
+     + '页面从 NAS 上打开时，<b>上面那一栏</b>是更省事的选择 —— 它不用配地址、'
+     + '不用管证书和跨域，也不用每次手动点。这一栏留着是给'
+     + '「页面不在 NAS 上、但手里有别的 WebDAV」那种情况的。</div>';
   h += '<label>WebDAV 目录地址</label>'
      + '<input id="dav-url" placeholder="https://nas.example.com/dav/film/" autocomplete="off" spellcheck="false" value="' + esc(dav ? dav.url : "") + '">';
   h += '<label>用户名（可选）</label>'
@@ -1510,116 +1487,6 @@ function renderSettings(db){
     h += '<button class="btn ghost" onclick="clearDavSettings()">清除同步凭据</button>';
   }
 
-  /* gh  = 登录态（有令牌就算）；ghd = 数据仓库配全了没有（同步层只认这个） */
-  const gh  = getGhRaw();
-  const ghd = getGh();
-  h += '<h2>同步到私有仓库（可选）</h2>';
-  h += '<div class="card" style="padding:16px 18px">';
-  h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
-     + '把数据存进一个<b>私有</b> GitHub 仓库。代码仓库是公开的，数据得单独放一处 —— '
-     + '提交进公开仓库的数据会永久留在 Git 历史里。放这儿的好处是数据不公开、自带版本历史，'
-     + '而且本机被系统清理或换了手机之后，一打开就自动拉回来。</div>';
-  h += '</div>';
-
-  if (!gh){
-    h += '<div class="card" style="padding:16px 18px">';
-    h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.9">'
-       + '① <a href="https://github.com/new?name=film-tap-data&amp;visibility=private" target="_blank" rel="noopener">建一个私有仓库</a>'
-       + '，名字随意，里面什么都不用放<br>'
-       + '② <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">建一枚 fine-grained 令牌</a>：'
-       + '<b>Repository access</b> 只勾①那个仓库，<b>Permissions</b> 里把 <b>Contents</b> 设成 '
-       + '<b>Read and write</b>，其余全部留 No access，再设一个过期日期<br>'
-       + '③ 把令牌粘到下面，点「验证并登录」—— 之后仓库不用手打，从列表里选就行</div>';
-    h += '<div class="hint" style="margin-top:12px">'
-       + '<b>这里最容易理解错的一点：</b>被清掉之后再想拉回来，得去建<b>新的一枚</b>令牌 —— '
-       + '浏览器清理存储时，令牌和仓库地址是<b>一起</b>被清掉的，而 GitHub 只在创建那一刻'
-       + '显示一次令牌值，旧的那串多半已经找不回来了。所以这一步的真实成本是'
-       + '「回 GitHub 再建一枚」，不是「重新验证一下就完事」。<br>'
-       + '另外那个「7 天」是从<b>最后一次打开这个站点</b>算起的，不是从配好那天算 —— '
-       + '每周碰一次标签就会重置，也就永远不会被清。</div>';
-    h += '</div>';
-    h += '<label>访问令牌（必填）</label>'
-       + '<input id="gh-token" type="password" autocomplete="new-password" '
-       +   'autocapitalize="none" autocorrect="off" spellcheck="false" '
-       +   'oninput="syncGhVerifyBtn()" placeholder="粘贴 fine-grained token">';
-    h += '<div class="hint">令牌只保存在这台设备上，<b>不会写进代码、也不会随网页发布出去</b>。'
-       + '手机丢了就回 GitHub 把那枚令牌撤销掉。<br>'
-       + '粘完就点下面的按钮 —— <b>页面一旦刷新，这个框会清空</b>，得重新粘一次。</div>';
-    /* 空着就点不动。这不是防呆，是**为了让「没粘上」看得见**：
-       粘成功按钮立刻变亮，没变亮就说明没粘进去。
-       以前它一直亮着，点了只回一句「先粘一枚令牌」，
-       用户根本分不清是自己没粘上、还是这个功能坏了。 */
-    h += '<button class="btn primary" id="gh-verify" disabled '
-       + 'onclick="verifyGh()">验证并登录</button>';
-  } else {
-    h += '<div class="card" style="padding:14px 16px;display:flex;align-items:center;gap:12px">';
-    if (gh.avatar){
-      h += '<img src="' + esc(gh.avatar) + '" alt="" width="38" height="38" '
-         + 'style="border-radius:50%;flex:none;display:block">';
-    }
-    h += '<div style="min-width:0">'
-       + '<div style="font-size:15px;font-weight:500;overflow:hidden;text-overflow:ellipsis">'
-       +   esc(gh.login ? "@" + gh.login : "已连上 GitHub") + '</div>'
-       + '<div style="font-size:12.5px;color:var(--ink-3);margin-top:3px;word-break:break-all">'
-       +   (ghd ? esc(ghd.owner + "/" + ghd.repo) : "还没选数据仓库") + '</div>'
-       + '</div>';
-    h += '</div>';
-
-    /* 老配置要有个明显的升级入口：手填过 owner/repo/token、但从没验证过身份的那种，
-       否则会一直停在「已连上 GitHub、没有头像」这一屏 ——
-       而「验证并登录」只长在未登录那套排版里，用户根本找不到它在哪。 */
-    if (!gh.login){
-      h += '<div class="hint" style="margin-top:10px">这枚令牌还没验证过身份 —— '
-         + '验证一下就会显示账号，而且仓库能从列表里选，不用手打。</div>';
-      h += '<button class="btn" onclick="verifyGh()">验证这枚令牌</button>';
-    }
-
-    if (ghRepos === null){
-      h += '<button class="btn" onclick="listGhRepos()">列出我的私有仓库</button>';
-      h += '<div class="hint">列不出来也不影响使用 —— 令牌只勾了一个仓库时 GitHub 可能不给列，'
-         + '下面「手动填仓库」一样能连上。</div>';
-    } else if (ghRepos.length){
-      h += '<label>选一个数据仓库</label><select id="gh-pick">';
-      for (const r of ghRepos){
-        const fn = String(r.full_name);
-        h += '<option value="' + esc(fn) + '"'
-           + ((ghd && ghd.owner + "/" + ghd.repo === fn) ? " selected" : "") + '>'
-           + esc(fn) + '</option>';
-      }
-      h += '</select>';
-      h += '<button class="btn primary" onclick="useGhRepo()">用这个仓库</button>';
-    } else {
-      h += '<div class="hint">这枚令牌看不到任何<b>私有</b>仓库。数据仓库必须是私有的 —— '
-         + '手动建一个再回来列一次；如果仓库本来就是私有的，'
-         + '多半是建令牌时没把它勾进 <b>Repository access</b>。</div>';
-      h += '<button class="btn" onclick="listGhRepos()">重新列出我的私有仓库</button>';
-    }
-  }
-
-  if (ghd){
-    h += '<div class="row">'
-       +   '<button class="btn" onclick="ghPush(false)">立即上传</button>'
-       +   '<button class="btn" onclick="ghPull()">从仓库拉取</button>'
-       + '</div>';
-    h += '<button class="btn' + (ghd.auto ? " primary" : "") + '" onclick="toggleGhAuto()">自动同步：'
-       +   (ghd.auto ? "已开启" : "已关闭") + '</button>';
-    h += '<div class="hint">关掉之后只有点「立即上传」才会写仓库。'
-       + '「本机为空时自动拉回」不受这个开关影响 —— 那是防数据丢失的底线。</div>';
-  }
-
-  /* 手动区放最后：它是退路，不是主路径。夹在「选仓库」和「立即上传」中间
-     会把一条顺畅的流程切两半。 */
-  h += '<details style="margin-top:14px">'
-     + '<summary style="font-size:13px;color:var(--accent);cursor:pointer;padding:4px 0">'
-     + (gh ? '手动填仓库 / 换一枚令牌' : '不想登录 GitHub，直接手填仓库')
-     + '</summary>';
-  h += ghManualForm(gh, !!gh);
-  h += '<button class="btn" onclick="saveGhFromForm()">保存仓库设置</button>';
-  if (gh) h += '<button class="btn ghost" onclick="verifyGh()">用这枚令牌重新验证</button>';
-  h += '</details>';
-
-  if (gh) h += '<button class="btn ghost" onclick="clearGhSettings()">退出登录并清除本机令牌</button>';
-
   h += '<h2>给 NFC 标签写什么</h2>';
   h += '<div class="card" style="padding:16px 18px">';
   h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.8">'
@@ -1648,6 +1515,75 @@ function renderSettings(db){
 
   h += '<div class="foot">film-tap · 数据全程留在本机<br>碰一下标签 › 编辑这卷 › 自动记天数和历史</div>';
   return h;
+}
+
+/* ── 自建 NAS 那一栏 ──
+   三种状态各一套排版：还没探到 / 不是从 NAS 打开的（整栏只留一句说明）/
+   探到了但没登录 / 已登录。 */
+function renderNasSection(){
+  let h = '<h2>同步到这台 NAS（自建）</h2>';
+
+  if (nasState === "unknown"){
+    return h + '<div class="card" style="padding:16px 18px">'
+             + '<div style="font-size:14px;color:var(--ink-2)">正在检测这个页面是不是从 NAS 打开的…</div>'
+             + '</div>';
+  }
+
+  if (nasState === "no"){
+    return h + '<div class="card" style="padding:16px 18px">'
+             + '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
+             + '这一栏只在页面<b>从你自己的 NAS 打开</b>时才出现 —— '
+             + '它要的是同源的 <span class="mono">/api/</span>，由 NAS 上那个进程自己发出来。'
+             + '现在这个页面是从别处打开的，所以这里空着。<br>'
+             + '上面「导出备份」和下面两条同步路线不受影响。</div>'
+             + '</div>';
+  }
+
+  if (!nasSess){
+    h += '<div class="card" style="padding:16px 18px">';
+    h += '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
+       + '页面和数据都由 NAS 上同一个进程发出来，所以<b>没有跨域这回事</b> —— '
+       + '不用给反代补 CORS、不用管证书、也不用维护任何令牌。<br>'
+       + '这里只需要一个密码。之后登录态由<b>服务器下发</b>，'
+       + '而服务器下发的 cookie 不在浏览器「闲置 7 天清空本地存储」的范围内 —— '
+       + '所以本机被清空之后，下次打开会自动把数据拉回来，你一步都不用做。</div>';
+    h += '<label>密码</label>'
+       + '<input id="nas-pass" type="password" autocomplete="new-password" '
+       + 'oninput="syncNasLoginBtn()" placeholder="在 NAS 上设的那个密码">';
+    h += '<div class="hint">密码不保存在这个页面里 —— 只在按按钮那一次发给 NAS，'
+       + '之后靠服务器给的会话。所以<b>页面一旦刷新，这个框会清空</b>，得重新输一次。<br>'
+       + '改密码：在 NAS 上跑 <span class="mono">docker exec -it film-tap python3 /app/server.py --set-password</span>。</div>';
+    /* 空着就点不动 —— 不是为了防呆，是为了让「没输上」看得见：
+       一直亮着的话，点了只回一句「先输密码」，用户分不清是没输上还是功能坏了。 */
+    h += '<button class="btn primary" id="nas-login" disabled onclick="nasLogin()">连接</button>';
+    h += '</div>';
+    return h;
+  }
+
+  const n = getNas();
+  h += '<div class="card" style="padding:14px 16px;display:flex;align-items:center;gap:12px">';
+  h += '<div style="min-width:0">'
+     + '<div style="font-size:15px;font-weight:500">已连上这台 NAS</div>'
+     + '<div style="font-size:12.5px;color:var(--ink-3);margin-top:3px;word-break:break-all">'
+     + (n.at ? "上次同步 " + esc(nasAtText(n.at)) : "还没有同步过")
+     + '</div></div></div>';
+
+  h += '<div class="row">'
+     +   '<button class="btn primary" onclick="nasPush(false)">立即存到 NAS</button>'
+     +   '<button class="btn" onclick="nasPull()">从 NAS 恢复</button>'
+     + '</div>';
+  h += '<button class="btn' + (nasAuto() ? " primary" : "") + '" onclick="toggleNasAuto()">自动存到 NAS：'
+     +   (nasAuto() ? "已开启" : "已关闭") + '</button>';
+  h += '<div class="hint">关掉之后只有点「立即存到 NAS」才写过去。'
+     + '「本机为空时自动拉回」不受这个开关影响 —— 那是防数据丢失的底线。</div>';
+  h += '<button class="btn ghost" onclick="nasLogout()">断开连接</button>';
+  return h;
+}
+
+function nasAtText(at){
+  /* 存的是 UTC ISO。直接 slice 出「年月日 时分」当 UTC 显示，
+     并写明是 UTC —— 猜时区只会让「上次同步」这个时间对不上。 */
+  return String(at).replace("T", " ").slice(0, 16) + " UTC";
 }
 
 /* 读不出来时露一条横幅。文案的重点是「没丢」——
@@ -1963,8 +1899,8 @@ async function syncToNas(){
 
   /* 只是给发出去的那一份盖个时间戳，**不写回本机**。
      早先这里写了 db.savedAt 再 save()，于是点一次「同步到 NAS」会顺带
-     触发一次私有仓库上传 —— 用户没点过那个按钮，却动了那个仓库。
-     跟 ghPush 里的处理保持一致：只改要发出去的副本。 */
+     触发一次自动同步 —— 用户没点过那个按钮，却动了别的存储。
+     自建 NAS 那边同理：只改要发出去的副本。 */
   const payload = Object.assign({}, load(), { savedAt: new Date().toISOString() });
   toast("同步中…");
 
@@ -2019,389 +1955,279 @@ async function restoreFromNas(){
   }
 }
 
-/* ══════════════ 私有仓库同步（GitHub Contents API）══════════════
-   为什么是「另开一个私有仓库」而不是直接写进本仓库：
-   代码仓库必须公开才能用免费的 GitHub Pages，而数据不该公开 ——
-   而且提交进 Git 的数据会永久留在历史里，删都删不掉。所以拆成两处。
+/* ══════════════ 自建 NAS 后端（同源 /api/*）══════════════
+   页面和接口在同一个域名、同一个端口下 —— 所以**没有跨域这回事**：
+   不触发预检、不需要 CORS 头、也完全不用碰 NAS 自带的 WebDAV。
+   （上面那条 WebDAV 路线要求「NAS 前面得有一层能补 TLS + CORS 的反代」；
+     这条路把那层变成自己 —— 页面和接口由同一个进程一起发出来。）
 
-   代价是需要一枚令牌，因此有三条铁律：
-     1. 令牌只存本机 localStorage，**永远不进源码、不进仓库**。
-     2. 令牌只放 Authorization 请求头，绝不写进请求体、日志或界面。
-     3. 令牌必须是 fine-grained：只授权这一个数据仓库，只给 Contents 读写，并设过期时间。 */
+   关键差别只有一处，但结果差很远：
+   **登录态住在服务器下发的 cookie 里，而不是住在 localStorage 里。**
+   浏览器「闲置 7 天清空存储」清的是**脚本能写**的那些
+   （localStorage / IndexedDB / Cache API / document.cookie）；
+   服务器用 Set-Cookie 下发的 cookie 不在清理范围内。
+   于是会话活得比那次清空久 —— 下次打开页面就能自动把数据拉回来，
+   用户一步都不用做。这是整个项目里唯一能做到这一点的一条路：
+   本机存储被清空之后，用户不需要重填任何凭据。 */
 
-const GH_KEY          = "filmtap.github";
-const GH_DEFAULT_PATH = "data.json";
+const NAS_KEY = "filmtap.nas";   // { rev, at, auto } —— 只有这三样，**没有密码**
+const NAS_API = "/api/";         // 同源，所以是相对路径：换域名不用改代码
 
-function getGh(){
+/* 这个页面是不是跑在自建后端上：探一次 /api/health 就知道。
+   探不到（比如把这个文件直接拖进浏览器打开）就把整栏收起来，不留半个入口。 */
+let nasState = "unknown";        // unknown | yes | no
+let nasSess  = false;            // 会话是否有效（由服务器 cookie 决定）
+let nasTimer = null;
+
+function getNas(){
   try{
-    const c = JSON.parse(localStorage.getItem(GH_KEY));
-    if (c && c.owner && c.repo && c.token) return c;
+    const c = JSON.parse(localStorage.getItem(NAS_KEY));
+    if (c && typeof c === "object" && !Array.isArray(c)) return c;
   }catch(e){}
-  return null;
+  return {};
 }
-function saveGh(c){ try{ localStorage.setItem(GH_KEY, JSON.stringify(c)); }catch(e){ toast("存储写入失败，可能是隐私模式"); } }
-function clearGh(){ localStorage.removeItem(GH_KEY); }
+function saveNas(c){ try{ localStorage.setItem(NAS_KEY, JSON.stringify(c)); }catch(e){ toast("存储写入失败，可能是隐私模式"); } }
+/* 版本号 = 上一次读到的服务端内容哈希。它和 rev 一起被清掉也没关系：
+   客户端不带版本号时服务端会跳过「别处改过」这条判断，
+   而真正要命的那条（拿空库覆盖服务端）服务端无条件拦。 */
+function nasRev(){ const c = getNas(); return typeof c.rev === "string" ? c.rev : null; }
+function nasAuto(){ const c = getNas(); return c.auto !== false; }   // 默认开：这是自己的盘，写过去很便宜
+function clearNasRev(){ const c = getNas(); delete c.rev; delete c.at; saveNas(c); }
 
-/* ── 登录态 ──
-   同步要 owner + repo + token 三样齐全，所以 getGh() 的门槛**不动**（同步逻辑一行没改）。
-   但「已经用 GitHub 登进来了、只是还没选仓库」是个真实状态，界面得能显示出来 ——
-   这是 getGhRaw() 的事。两者只差一件事：要不要 owner / repo。 */
-function getGhRaw(){
+/* 一次调用包住所有失败：连不上、被拦、超时，对调用方都只是「没拿到」。
+   同源请求默认就带 cookie（credentials 默认 same-origin），这里写明是为了自检能断言。 */
+async function nasCall(path, opt){
   try{
-    const c = JSON.parse(localStorage.getItem(GH_KEY));
-    if (c && c.token) return c;
-  }catch(e){}
-  return null;
-}
-
-/* 仓库清单只放内存、不落盘：它是「这枚令牌当前看得见什么」的快照，
-   存下来只会在换令牌或撤销授权之后变成一份过期的错误信息。 */
-let ghRepos = null;
-
-/* GET /user 只回答「这枚令牌是谁的」。它是**验证**，不是授权 ——
-   真正的权限判断仍然由后面每一次 contents 调用自己给出，
-   这里过了不代表能写仓库。 */
-async function ghUser(token){
-  let res;
-  try{
-    res = await fetch("https://api.github.com/user", { headers: ghHeaders({ token }) });
-  }catch(e){ return { error:"连不上 GitHub，检查网络" }; }
-  if (res.status === 401) return { error:"令牌无效或已过期（去 GitHub 重新生成一枚）" };
-  if (!res.ok)            return { error:"验证失败：" + res.status };
-  try{ return { user: await res.json() }; }
-  catch(e){ return { error:"GitHub 返回了读不懂的内容" }; }
+    return await fetch(NAS_API + path,
+      Object.assign({ credentials:"same-origin" }, opt || {}));
+  }catch(e){ return null; }
 }
 
-/* 列仓库只是「省掉手打仓库名」的便利，不是必需能力：
-   fine-grained 令牌如果只勾了一个仓库，这个接口可能列不出东西（甚至 403）。
-   那不是错误，退回手填照样能用 —— 所以失败时给空数组，不抛。 */
-async function ghListRepos(token){
-  let res;
-  try{
-    res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner",
-                      { headers: ghHeaders({ token }) });
-  }catch(e){ return { error:"连不上 GitHub" }; }
-  if (res.status === 401) return { error:"令牌无效或已过期" };
-  if (!res.ok)            return { error:"列不出仓库（" + res.status + "），手填仓库名即可" };
+/* 认的是「这个后端自报的 app 名」，不是「这个路径返回了 200」——
+   别的服务恰好也有 /api/health 时，不能把它当成我们的后端。 */
+async function nasHealth(){
+  const res = await nasCall("health", { headers:{ "Accept":"application/json" } });
+  if (!res || !res.ok) return null;
   try{
     const j = await res.json();
-    return { repos: Array.isArray(j) ? j : [] };
-  }catch(e){ return { error:"仓库列表读不出来" }; }
+    return (j && j.app === "film-tap") ? j : null;
+  }catch(e){ return null; }
 }
 
-/* 只收私有仓库。数据放公开仓库 = 把机身和胶卷清单公开，
-   而且提交进 Git 的内容删不掉 —— 这件事没有「用户自己知道风险就行」的余地。 */
-function onlyPrivate(list){
-  return (list || []).filter(r => r && r.private && r.full_name);
+async function nasFetchData(){
+  const res = await nasCall("data", { headers:{ "Accept":"application/json" } });
+  if (!res) return { error:"连不上服务端" };
+  if (res.status === 401) return { error:"unauthorized" };
+  if (!res.ok) return { error:"读取失败：" + res.status };
+  try{
+    const j = await res.json();
+    return { data: j ? j.data : null, rev: j ? j.rev : null };
+  }catch(e){ return { error:"服务端返回了读不懂的内容" }; }
 }
 
-async function verifyGh(){
-  /* 从 GitHub 页面复制令牌时很容易带进换行或空格。令牌本身只可能是
-     [A-Za-z0-9_]，所以直接抹掉所有空白 —— 不抹的话用户拿到的是一个
-     语焉不详的 401，而真正的原因只是一个看不见的换行符。 */
-  const box   = $("#gh-token");
+/* 「连接」按钮跟着密码框亮灭：一直亮着的话，点了只回一句「先输密码」，
+   用户分不清是没输上还是功能坏了。 */
+function syncNasLoginBtn(){
+  const btn = $("#nas-login");
+  if (!btn) return;
+  const box = $("#nas-pass");
+  btn.disabled = ((box ? box.value : "")).replace(/\s+/g, "").length === 0;
+}
+
+async function nasLogin(){
+  const box   = $("#nas-pass");
   const typed = (box ? box.value : "").replace(/\s+/g, "");
-  const old   = getGhRaw();
-  const token = typed || ((old && old.token) || "");       // 留空 = 沿用已存的令牌
-  if (!token){
-    /* 光说「先粘一枚令牌」等于没说：用户手里可能正捏着令牌，
-       只是没粘进去（或者页面刷新把它清空了）。所以把光标送进那个框里，
-       并把话说成「哪个框」。 */
+  if (!typed){
+    /* 光说「先输密码」等于没说：用户手里可能正拿着密码，只是没输进去
+       （或者刷新把它清空了）。所以把光标送进那个框，并把话说成「哪个框」。 */
     if (box) box.focus();
-    toast("上面「访问令牌」那个框是空的 —— 先把令牌粘进去");
+    toast("上面「密码」那个框是空的 —— 先把密码输进去");
     return;
   }
 
-  toast("验证中…");
-  const u = await ghUser(token);
-  if (u.error){ toast(u.error); return; }
-
-  const me = u.user || {};
-  saveGh(Object.assign({}, old || {}, {
-    token,
-    login:  me.login || "",
-    name:   me.name  || "",
-    avatar: me.avatar_url || ""
-  }));
-  ghRepos = null;                       // 换了令牌，旧的仓库清单立刻作废
-  toast(me.login ? "已登录 @" + me.login : "令牌有效");
-
-  const r = await ghListRepos(token);
-  if (!r.error) ghRepos = onlyPrivate(r.repos);
-  render(true);
-}
-
-/* 「验证并登录」按钮跟着令牌框的内容亮灭。
-   ⚠️ 只在**未登录**状态下挂这个钩子（渲染时才给按钮 id 和 disabled）。
-   登录之后那个按钮是「用这枚令牌重新验证」，令牌留空表示沿用已存的 ——
-   那时候空着是合法的，绝不能把按钮锁死。 */
-function syncGhVerifyBtn(){
-  const btn = $("#gh-verify");
-  if (!btn) return;
-  const box = $("#gh-token");
-  const has = ((box ? box.value : "")).replace(/\s+/g, "").length > 0;
-  /* 只改 disabled，外观交给 CSS 的 .btn:disabled ——
-     样式和状态各留一处，免得以后调颜色要改两个地方。 */
-  btn.disabled = !has;
-}
-
-async function listGhRepos(){
-  const c = getGhRaw();
-  if (!c){ toast("先粘令牌验证一次"); return; }
-
-  toast("读取仓库列表…");
-  const r = await ghListRepos(c.token);
-  if (r.error){ ghRepos = []; toast(r.error); render(true); return; }
-  ghRepos = onlyPrivate(r.repos);
-  toast(ghRepos.length ? "列出 " + ghRepos.length + " 个私有仓库" : "这枚令牌看不到私有仓库");
-  render(true);
-}
-
-/* 选中的仓库落进配置。owner 从 full_name 里切 ——
-   仓库名和用户名都不可能含 "/"，所以切第一个斜杠是安全的，不用去猜。 */
-function useGhRepo(){
-  const c = getGhRaw();
-  if (!c){ toast("先粘令牌验证一次"); return; }
-
-  const full = String($("#gh-pick").value || "").trim();
-  const cut  = full.indexOf("/");
-  if (cut <= 0){ toast("先在上面选一个仓库"); return; }
-
-  saveGh(Object.assign({}, c, {
-    owner:  full.slice(0, cut),
-    repo:   full.slice(cut + 1),
-    path:   c.path   || GH_DEFAULT_PATH,
-    branch: c.branch || "main"
-  }));
-  toast("已连接 " + full);
-  render(true);
-
-  /* 新设备上「粘令牌 → 选仓库」之后本机还是空的 —— 因为自动回灌只在页面启动时跑一次。
-     不在这儿补一下的话，流程会停在「连上了，但一台机身都没有」，看着像没成功。
-     ghRehydrate 只在**本机一台机身都没有**时才动手，所以这里不可能覆盖掉什么。
-     （把 promise return 出去只是为了让自检能 await 这次拉取，浏览器里没人看返回值。） */
-  return ghRehydrate().catch(()=>{});
-}
-
-/* GitHub 的 contents 走 base64。机身名和备注会写中文，所以不能直接 btoa(字符串) ——
-   那在非 Latin1 字符上直接抛错。必须先编码成 UTF-8 字节再转。 */
-function b64encode(str){
-  const bytes = new TextEncoder().encode(str);
-  let s = "";
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s);
-}
-function b64decode(b64){
-  const s = atob(String(b64 == null ? "" : b64).replace(/\s+/g, ""));
-  const bytes = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
-}
-
-function ghApi(c){
-  return "https://api.github.com/repos/" + encodeURIComponent(c.owner) + "/"
-       + encodeURIComponent(c.repo) + "/contents/"
-       + String(c.path).split("/").map(encodeURIComponent).join("/");
-}
-function ghHeaders(c){
-  return {
-    "Authorization": "Bearer " + c.token,          // 只走请求头
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28"
-  };
-}
-
-/* 读远端 → { db, sha }，失败 → { error } */
-async function ghFetch(c){
-  let res;
-  try{
-    res = await fetch(ghApi(c) + "?ref=" + encodeURIComponent(c.branch || "main"),
-                      { headers: ghHeaders(c) });
-  }catch(e){ return { error:"连不上 GitHub，检查网络" }; }
-
-  if (res.status === 401) return { error:"令牌无效或已过期（去 GitHub 重新生成一枚）" };
-  if (res.status === 403) return { error:"令牌权限不够，需要 Contents 读写" };
-  if (res.status === 404) return { error:"找不到 " + c.owner + "/" + c.repo + " 里的 " + c.path };
-  if (!res.ok)            return { error:"读取失败：" + res.status };
-
-  try{
-    const j  = await res.json();
-    const db = JSON.parse(b64decode(j.content));
-    if (!db || !db.cameras) return { error:"仓库里的数据格式不对" };
-    return { db, sha: j.sha };
-  }catch(e){ return { error:"仓库里的数据读不出来" }; }
-}
-
-/* 写远端。先读一次拿 sha 再写，避免在远端堆出一串无意义的版本。 */
-/* quiet = 自动同步那条路（不弹 toast）；force = 用户已经明确确认过要清空仓库
-   （只有设置页的「清空全部数据 → 连仓库一起清」用它）。 */
-async function ghPush(quiet, force){
-  const c = getGh();
-  if (!c) return false;
-
-  const cur = await ghFetch(c);
-  if (cur.error && cur.error.indexOf("找不到") < 0){      // 404 是首次创建，允许继续
-    if (!quiet) toast(cur.error);
-    return false;
-  }
-
-  /* ⚠️ 整库快照是「后写的赢」，没有合并 —— 所以「本机空、仓库非空」这一次上传
-     等于**把仓库清空**。这条事故路径是真的：本机存储被系统清理（或换了台设备打开），
-     用户随手记了一台机身，那一下就把仓库里二十台全冲掉，而且不报任何错。
-
-     这里选择「拦下来」而不是「问一句」：自动同步（quiet）那条路没人可问。
-     真要清空仓库，走设置页的「清空全部数据」—— 那条路会明确问一次，
-     然后带着 force 过来（force 就是「用户已经点过那两次确定」的意思）。 */
-  if (!force && !cur.error){
-    const localN  = Object.keys(load().cameras).length;
-    const remoteN = Object.keys(cur.db.cameras).length;
-    if (localN === 0 && remoteN > 0){
-      if (!quiet){
-        toast("本机一台机身都没有，仓库里有 " + remoteN + " 台 —— 先点「从仓库拉取」对齐");
-      }
-      return false;
-    }
-  }
-
-  /* savedAt 只加在要发出去的这一份里，不回写本机 ——
-     否则 save() → 自动推送 → save() 会绕成死循环。 */
-  const payload = Object.assign({}, load(), { savedAt: new Date().toISOString() });
-  const body = {
-    message: "更新胶片数据 " + todayLocal(),
-    content: b64encode(JSON.stringify(payload, null, 2)),
-    branch:  c.branch || "main"
-  };
-  if (cur.sha) body.sha = cur.sha;
-
-  const put = () => fetch(ghApi(c), {
-    method: "PUT",
-    headers: Object.assign({ "Content-Type": "application/json" }, ghHeaders(c)),
-    body: JSON.stringify(body)
+  toast("连接中…");
+  const res = await nasCall("login", {
+    method: "POST",
+    headers: { "Content-Type":"application/json", "Accept":"application/json" },
+    body: JSON.stringify({ password: typed })
   });
 
-  let res;
-  try{ res = await put(); }
-  catch(e){ if (!quiet) toast("连不上 GitHub，检查网络"); return false; }
+  /* ⚠️ 「密码错」和「连不上」必须分开说。混成一句「连不上」的话，
+     用户会跑去查一个根本没坏的网络 —— 而这个项目正是从那类误判里长出来的。 */
+  if (!res){ toast("连不上服务端（页面能打开的话，多半是它刚刚重启）"); return; }
 
-  if (res.ok || res.status === 201){
-    if (!quiet) toast("已上传到私有仓库");
+  if (res.status === 401){
+    /* 清空并把光标送回去：手机上留着上一次的错密码，
+       多半会变成「在后面接着打」，然后又是同一个 401。 */
+    if (box){ box.value = ""; box.focus(); }
+    toast("密码不对，再试一次");
+    return;
+  }
+  if (res.status === 429){ toast("失败次数太多，等几分钟再试"); return; }
+  if (res.status === 503){ toast("服务端还没设密码 —— 先在 NAS 上跑一次 --set-password"); return; }
+  if (!res.ok){ toast("登录失败：" + res.status); return; }
+
+  if (box) box.value = "";        // 密码不许留在页面上，也不许进 localStorage
+  nasSess = true;
+  toast("已连上");
+  render(true);
+  return nasRehydrate().catch(()=>{});
+}
+
+async function nasLogout(){
+  await nasCall("logout", { method:"POST" });
+  nasSess = false;
+  clearNasRev();
+  toast("已断开");
+  render(true);
+}
+
+/* 写服务端。rev 是「我上次读到的版本」，服务端拿它判断有没有别处改过。
+   quiet = 自动同步那条路（不弹成功提示）；force = 用户已经明确点过
+   「连 NAS 上的一起清空」，只有设置页那条路会带它。 */
+async function nasPush(quiet, force){
+  if (nasState !== "yes") return false;
+  if (!nasSess){ if (!quiet) toast("先在上面连接一次"); return false; }
+
+  /* savedAt 只加在要发出去的这一份里，不回写本机 ——
+     否则 save() → 自动上传 → save() 会绕成死循环。 */
+  const payload = Object.assign({}, load(), { savedAt: new Date().toISOString() });
+
+  const res = await nasCall("data", {
+    method: "PUT",
+    headers: { "Content-Type":"application/json", "Accept":"application/json" },
+    body: JSON.stringify({ data: payload, rev: force ? null : nasRev(), force: !!force })
+  });
+  if (!res){ if (!quiet) toast("连不上服务端"); return false; }
+
+  if (res.ok){
+    let j = null;
+    try{ j = await res.json(); }catch(e){}
+    const c = getNas();
+    if (j && j.rev) c.rev = j.rev;
+    c.at = new Date().toISOString();
+    saveNas(c);
+    if (!quiet) toast("已存到 NAS");
     return true;
   }
 
-  if (res.status === 409){          // 我们读完之后远端又变了：重读 sha 再写一次
-    const again = await ghFetch(c);
-    if (!again.error){
-      body.sha = again.sha;
-      try{
-        const retry = await put();
-        if (retry.ok || retry.status === 201){
-          if (!quiet) toast("已上传到私有仓库");
-          return true;
-        }
-      }catch(e){}
-    }
+  /* 会话没了（cookie 过期、服务端换了密码、或者容器重建过）。
+     这里**不弹提示**：界面自己会退回「未登录」那一屏，那就是信号。
+     每次都弹的话，自动同步那条路会一边写一边刷屏。 */
+  if (res.status === 401){
+    nasSess = false;
+    render(true);
+    return false;
   }
 
-  if (!quiet) toast(res.status === 403 ? "令牌权限不够，需要 Contents 读写" : "上传失败：" + res.status);
+  let j = null;
+  try{ j = await res.json(); }catch(e){}
+  const msg = (j && j.message) || ("存到 NAS 失败：" + res.status);
+  /* ⚠️ 这两个 409 不吃掉、也不静默 —— 连自动同步那条路都要说：
+       stale：别处改过。不吭声的话，用户这次改动就永远没进备份。
+       not_empty_overwrite：这一下会把服务端清空，更要拦下并说明白。 */
+  toast(msg);
   return false;
 }
 
-/* 变更后的自动上传。防抖 2 秒：连着改几处不会打成一串提交。 */
-let ghTimer = null;
-function scheduleGhPush(){
-  const c = getGh();
-  if (!c || !c.auto) return;
-  clearTimeout(ghTimer);
-  /* 把 promise return 出去只是为了可测：自检里要能 await 这次被安排的上传。
-     浏览器里 setTimeout 的回调返回值没人看，无副作用。 */
-  ghTimer = setTimeout(()=>{ ghTimer = null; return ghPush(true).catch(()=>{}); }, 2000);
+/* 变更后的自动上传。防抖 2 秒：连着改几处不会打成一串请求。 */
+function scheduleNasPush(){
+  if (nasState !== "yes" || !nasSess || !nasAuto()) return;
+  clearTimeout(nasTimer);
+  /* 把 promise return 出去只是为了可测：自检里要能 await 这次被安排的上传。 */
+  nasTimer = setTimeout(()=>{ nasTimer = null; return nasPush(true).catch(()=>{}); }, 2000);
 }
-function flushGhPush(){
-  if (ghTimer){
-    clearTimeout(ghTimer); ghTimer = null;
-    return ghPush(true).catch(()=>{});
+function flushNasPush(){
+  if (nasTimer){
+    clearTimeout(nasTimer); nasTimer = null;
+    return nasPush(true).catch(()=>{});
   }
 }
 
-/* 打开时回灌 —— 这是对付 iOS「Safari 闲置 7 天清空 localStorage」的唯一可靠手段。
-   ⚠️ 只在本地一台机身都没有时才动手。本机有数据时**绝不覆盖**，
-      否则会出现「刚记的机身被悄悄抹掉」。NAS 那边踩过同样的坑，这条是硬规矩。 */
-async function ghRehydrate(){
-  const c = getGh();
-  if (!c) return;
-  if (Object.keys(load().cameras).length) return;      // 本机有数据 → 什么都不做
+/* 打开时回灌。两条硬规矩：
+   ① 只在**本机一台机身都没有**时才动手 —— 本机有数据时绝不覆盖，
+      否则会出现「刚记的机身被悄悄抹掉」；
+   ② 服务端也是空的就什么都不做。
+   差别只在触发条件：这条路不需要用户重填任何东西，
+   会话是服务器给的 cookie，它活过了那次存储清理。 */
+async function nasRehydrate(){
+  if (nasState !== "yes" || !nasSess) return false;
+  if (Object.keys(load().cameras).length) return false;
 
-  const r = await ghFetch(c);
-  if (r.error || !r.db) return;
-  if (!Object.keys(r.db.cameras).length) return;       // 远端也是空的，没什么可拉
+  const r = await nasFetchData();
+  if (r.error){
+    if (r.error === "unauthorized"){ nasSess = false; render(true); }
+    return false;
+  }
+  const c = getNas();
+  if (r.rev) c.rev = r.rev;              // 版本号即使没数据也要记住，否则第一次上传会被判成「别处改过」
+  if (!r.data){
+    if (r.rev) saveNas(c);
+    return false;
+  }
+  const n = Object.keys(r.data.cameras || {}).length;
+  if (!n){ if (r.rev) saveNas(c); return false; }
 
-  save(normalize(r.db));
+  c.at = new Date().toISOString();
+  saveNas(c);
+  save(normalize(r.data));
+  clearTimeout(nasTimer); nasTimer = null;   // 刚拉回来的这份不用再打回去
   render(true);
-  toast("已从私有仓库恢复 " + Object.keys(r.db.cameras).length + " 台机身");
+  toast("已从 NAS 恢复 " + n + " 台机身");
+  return true;
 }
 
 /* 手动拉取。这条会覆盖本机，所以只要有数据就必须先确认。 */
-async function ghPull(){
-  const c = getGh();
-  if (!c){ toast("先填仓库设置"); return; }
+async function nasPull(){
+  if (nasState !== "yes"){ toast("这个页面不是从 NAS 打开的"); return; }
+  if (!nasSess){ toast("先在上面连接一次"); return; }
 
   toast("读取中…");
-  const r = await ghFetch(c);
-  if (r.error){ toast(r.error); return; }
+  const r = await nasFetchData();
+  if (r.error){
+    toast(r.error === "unauthorized" ? "连接已失效，重新输一次密码" : r.error);
+    if (r.error === "unauthorized"){ nasSess = false; render(true); }
+    return;
+  }
+  if (!r.data){ toast("NAS 上还没有数据"); return; }
 
   const localN  = Object.keys(load().cameras).length;
-  const remoteN = Object.keys(r.db.cameras).length;
-  if (localN > 0 && !confirm("本机已有 " + localN + " 台机身，仓库里有 " + remoteN + " 台。\n\n"
-      + "继续会用仓库的版本覆盖本机数据，确定吗？")) return;
+  const remoteN = Object.keys(r.data.cameras || {}).length;
+  if (localN > 0 && !confirm("本机已有 " + localN + " 台机身，NAS 上有 " + remoteN + " 台。\n\n"
+      + "继续会用 NAS 的版本覆盖本机数据，确定吗？")) return;
 
-  save(normalize(r.db));
-  toast("已从仓库恢复 " + remoteN + " 台机身");
+  const c = getNas();
+  if (r.rev) c.rev = r.rev;
+  c.at = new Date().toISOString();
+  saveNas(c);
+  save(normalize(r.data));
+  clearTimeout(nasTimer); nasTimer = null;
+  toast("已从 NAS 恢复 " + remoteN + " 台机身");
   go("#/");
 }
 
-function saveGhFromForm(){
-  const owner = $("#gh-owner").value.trim();
-  const repo  = $("#gh-repo").value.trim();
-  if (!owner || !repo){ toast("仓库所有者和仓库名都要填"); return; }
-
-  const typed = $("#gh-token").value.trim();        // 留空表示沿用已保存的令牌
-  /* ⚠️ 这里必须用 getGhRaw 而不是 getGh：刚验证完登录、还没选仓库时，
-     getGh() 是 null（它要求 owner+repo+token 三样齐全）。用 getGh() 的话，
-     用户「登录后又手填了仓库名」，会被要求再粘一次刚粘过的令牌。 */
-  const old   = getGhRaw();
-  const token = typed || ((old && old.token) || "");
-  if (!token){ toast("要填一枚只读这个仓库的令牌"); return; }
-
-  /* Object.assign 带上 old，是为了不把登录时记下的 login / 头像抹掉 */
-  saveGh(Object.assign({}, old || {}, {
-    owner, repo, token,
-    path:   $("#gh-path").value.trim()   || GH_DEFAULT_PATH,
-    branch: $("#gh-branch").value.trim() || "main",
-    auto:   !!(old && old.auto)
-  }));
-  toast("已保存");
-  render(true);
-
-  /* 手填那条路同理：刚在一台新设备上配好仓库、本机却是空的，
-     不顺手拉一次就会停在空库上。ghRehydrate 自己会把「本机有数据」挡掉。 */
-  return ghRehydrate().catch(()=>{});
-}
-
-function clearGhSettings(){
-  if (!confirm("退出登录，并清除本机保存的仓库地址和令牌？仓库里的数据不受影响，"
-             + "以后粘一次令牌就能重新接上。")) return;
-  clearGh();
-  ghRepos = null;
-  toast("已清除");
+function toggleNasAuto(){
+  const c = getNas();
+  c.auto = !(c.auto !== false);
+  saveNas(c);
+  toast(c.auto ? "已开启自动存到 NAS" : "已关闭自动存到 NAS");
   render(true);
 }
 
-function toggleGhAuto(){
-  const c = getGh();
-  if (!c){ toast("先保存仓库设置"); return; }
-  c.auto = !c.auto;
-  saveGh(c);
-  toast(c.auto ? "已开启自动同步" : "已关闭自动同步");
+/* 启动时探一次。失败即「这个页面不在 NAS 上」，整栏收起。 */
+async function nasBoot(){
+  const h = await nasHealth();
+  nasState = h ? "yes" : "no";
+  if (h && h.configured){
+    /* /api/session 回的是 200 + {"ok":false} 而不是 401 ——
+       「现在是谁」的答案可以是「没人」，那不是错误。这样未登录打开页面时
+       控制台不会多出一条红色，把真正的报错淹掉。 */
+    const res = await nasCall("session", { headers:{ "Accept":"application/json" } });
+    let j = null;
+    try{ j = res ? await res.json() : null; }catch(e){}
+    nasSess = !!(j && j.ok === true);
+    if (nasSess) await nasRehydrate();
+  }
   render(true);
 }
 
@@ -2443,16 +2269,18 @@ function wipe(){
   if (!confirm("真的确定？建议先导出备份。")) return;
   localStorage.removeItem(KEY);
 
-  /* 私有仓库里如果还留着一份，下次打开会被自动回灌拉回来 —— 用户会以为「删不掉」。
-     所以这里问一次要不要连远端一起清掉。keep 是合法的选择，只是要讲清楚后果。 */
-  if (getGh() && confirm("私有仓库里还留着一份备份。\n\n"
-      + "点「确定」连仓库里的一起清空。\n"
-      + "点「取消」保留仓库备份 —— 下次打开这个 App 时会自动把它拉回来。")){
+  /* 自建 NAS 上如果还留着一份，下次打开会被自动回灌拉回来 —— 用户会以为「删不掉」。
+     所以这里问一次要不要连服务端一起清掉。keep 是合法的选择，只是要讲清楚后果。 */
+  if (nasState === "yes" && nasSess && confirm("NAS 上也还留着一份。\n\n"
+      + "点「确定」连 NAS 上的一起清空。\n"
+      + "点「取消」保留 NAS 备份 —— 下次打开这个页面时会自动把它拉回来。")){
+    clearNasRev();
+    nasPush(false, true).catch(()=>{});    // force：用户刚点了两次确定，明确要连服务端一起清
     toast("已清空");
-    ghPush(false, true).catch(()=>{});      // force：用户刚点了两次确定，明确要连仓库一起清
     go("#/");
     return;
   }
+
   toast("已清空");
   go("#/");
 }
@@ -2495,12 +2323,14 @@ render();
 /* 到这里为止发生的 save() 都属于启动过程（灌示例数据），不该触发上传。
    过了这一步才认为「用户动了数据」，允许自动同步。 */
 syncArmed = true;
-ghRehydrate().catch(()=>{});
+/* 自建 NAS：先探「这个页面是不是从 NAS 打开的」，是的话接上会话、
+   本机为空就自动回灌。整条路都在 .catch 里 —— 探不到就是个正常的空结果。 */
+nasBoot().catch(()=>{});
 
 /* 页面切走 / 被关掉时，把还在防抖窗口里的那次上传立刻发掉，
    免得「改完就锁屏」把这次改动丢掉。 */
-window.addEventListener("pagehide", flushGhPush);
-window.addEventListener("visibilitychange", flushGhPush);
+window.addEventListener("pagehide", flushNasPush);
+window.addEventListener("visibilitychange", flushNasPush);
 
 /* 键盘把整行当按钮用。role="button" + tabindex 只解决「能聚焦」，
    聚焦了按回车并不会自己触发 onclick —— 得手动接过去。

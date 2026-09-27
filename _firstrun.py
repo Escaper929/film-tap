@@ -7,15 +7,19 @@
 装卷 → 刷新 → 数据还在」这条**每个新用户唯一会走的**路径，在自检里是完全空白的。
 这个脚本专门补它，同时顺带验证线上拿到的确实是新版（SW 有没有同步）。
 
-默认打线上 Pages，因为「本地跑通」和「线上生效」是两件事：
+默认打线上那个部署（NAS 上跑着容器的那个）。之所以不打本地：
+「本地跑通」和「线上生效」是两件事 ——
 - 本地过、线上没过 → sw.js 忘了动，手机还在吃旧缓存
 - 线上过、本地没过 → 基本不可能，但也能立刻看出来
 
 用法（注意解释器：playwright 装在工程 venv 里，系统 python3 没有）：
 
     PY=/Users/lh/.workbuddy/binaries/python/envs/default/bin/python
-    $PY _firstrun.py                             # 线上 Pages
-    $PY _firstrun.py http://127.0.0.1:8123       # 本地服务
+    $PY _firstrun.py                            # NAS 上那个部署
+    $PY _firstrun.py http://127.0.0.1:8123      # 本地静态服务
+
+拿本地静态服务跑时，设置页的 NAS 那一栏会正确地收到「这一页不是从 NAS
+打开的」—— 那个情况下跟 NAS 有关的那几条会自动跳过，不算失败。
 
 直接敲 `python _firstrun.py` 会报 ModuleNotFoundError: playwright —— 那不是
 脚本坏了，是解释器选错了。上面那个 venv 才是装了 playwright 的那个。
@@ -27,7 +31,7 @@
 import sys
 from playwright.sync_api import sync_playwright
 
-BASE = (sys.argv[1] if len(sys.argv) > 1 else "https://escaper929.github.io/film-tap").rstrip("/")
+BASE = (sys.argv[1] if len(sys.argv) > 1 else "https://film.792420124.xyz:16666").rstrip("/")
 
 ok, bad = [], []
 
@@ -50,8 +54,25 @@ with sync_playwright() as p:
     )
     page = ctx.new_page()
     errs = []
+
+    def on_console(m):
+        if m.type != "error":
+            return
+        # 页面启动时会探一次 /api/health，用来判断自己是不是跑在自建后端上。
+        # 拿本地静态服务器跑时这个请求必然 404 —— 那正是「不是自建」这个
+        # **答案本身**，不是故障。所以只放过打到 /api/ 的 404，别的报错照旧拦下来。
+        # ⚠️ 路径不在 m.text 里（那里只有「status of 404」这几个字），
+        #    得从 m.location 取 URL。
+        try:
+            url = (m.location or {}).get("url", "") or ""
+        except Exception:
+            url = ""
+        if "/api/" in url and "404" in m.text:
+            return
+        errs.append("console.error: " + m.text)
+
     page.on("pageerror", lambda e: errs.append("pageerror: " + str(e)))
-    page.on("console", lambda m: errs.append("console.error: " + m.text) if m.type == "error" else None)
+    page.on("console", on_console)
 
     # 空库第一次点「登记第一台机身」会弹原生 prompt
     page.on("dialog", lambda d: d.accept("我的第一台"))
@@ -121,15 +142,28 @@ with sync_playwright() as p:
     check("统计页三格", n == 3, "实际 %d 格" % n)
     check("统计页无累计快门", "累计快门" not in h and "按满卷算" not in h)
 
-    # ── ⑥ 设置页：未登录时的三步向导 ──
+    # ── ⑥ 设置页：NAS 那一栏 ──
+    # 页面就是从这个后端发出来的，所以这一栏必须展开成「输密码 / 已连上」那一屏，
+    # 而不是「这一页不是从 NAS 打开的」。后者意味着探活那条路断了 ——
+    # 而只要探活断了，整个「本机被清空后自动恢复」的能力就跟着没了。
     page.evaluate("location.hash = '#/settings'")
     page.wait_for_timeout(400)
     h = app(page)
-    check("设置页三步向导在", all(s in h for s in
-          ["验证并登录", "建一个私有仓库", "建一枚 fine-grained 令牌"]),
-          "文案齐" if "建一个私有仓库" in h else "缺文案")
+    nas_live = page.evaluate(
+        "async () => { try { const r = await fetch('/api/health'); "
+        "return !!(r && r.ok); } catch(e){ return false; } }")
+    if nas_live:
+        check("设置页有 NAS 这一栏", "同步到这台 NAS" in h and 'id="nas-pass"' in h)
+        check("NAS 那栏没被收起来", "只在页面" not in h, "探活成功")
+    else:
+        print("%-34s %s" % ("设置页有 NAS 这一栏", "跳过（拿本地静态服务跑的，没有 /api/）"))
+    # GitHub 那整套已经拆掉了。这一条是防它长回来：页面里出现任何一个
+    # GitHub 相关的字眼，都说明有残留没摘干净。
+    check("设置页不再提 GitHub",
+          not any(s in h for s in ["GitHub", "github", "私有仓库", "访问令牌"]),
+          "干净" if "GitHub" not in h else "还有残留")
 
-    # ── ⑥b WebDAV 的三个前提（先跑这条，它不改 gh 那边的状态）──
+    # ── ⑥b WebDAV 的三个前提 ──
     # 这个页面若是 https，http 地址就**根本发不出请求**（混合内容），
     # 拦得很彻底，现象和「NAS 没开机」一模一样 —— 保存时就该挡下来。
     # ⚠️ 但守卫本身是判 location.protocol 的，所以拿 http 本地服务跑时
@@ -175,47 +209,6 @@ with sync_playwright() as p:
     # 那是预期内的，不该算成页面报错 —— 只把这一段里的那类错误滤掉。
     errs[mark:] = [e for e in errs[mark:] if "Failed to load resource" not in e]
     page.evaluate("() => { try { localStorage.removeItem('filmtap.webdav') } catch(e){} }")
-
-    # ── ⑥c 令牌框 / 验证按钮的联动 ──
-    # 这是用户在真实手机上踩到的坑：按钮一直亮着、空着也能点，
-    # 点完只回一句「先粘一枚令牌」—— 分不清是自己没粘上还是功能坏了。
-    # 现在空着必须是禁用的，粘进去才亮。
-    dis = lambda: page.evaluate("!!document.querySelector('#gh-verify').disabled")
-    check("未粘令牌时验证按钮禁用", dis() is True)
-    check("令牌框挂上了 oninput", 'oninput="syncGhVerifyBtn()"' in h)
-
-    page.fill("#gh-token", "probe" + "-token-0123456789")
-    page.wait_for_timeout(250)
-    check("粘了令牌按钮就亮", dis() is False)
-
-    page.fill("#gh-token", "   ")
-    page.wait_for_timeout(250)
-    check("只填空格不算粘了", dis() is True)
-
-    # 守卫的文案要指路（说「哪个框」），而不是只丢一句「先粘令牌」
-    page.evaluate("() => { document.querySelector('#gh-token').value = ''; }")
-    page.evaluate("() => verifyGh()")
-    page.wait_for_timeout(250)
-    guard = page.evaluate("document.querySelector('#toast').textContent")
-    check("空令牌的提示会指路", "访问令牌" in guard, repr(guard))
-
-    # 真的粘上之后，点下去必须走到发请求那一步
-    page.fill("#gh-token", "probe" + "-token-0123456789")
-    page.wait_for_timeout(200)
-    page.evaluate("""() => {
-        window.__hits = [];
-        window.fetch = (u, o) => { window.__hits.push(String(u));
-            return Promise.resolve({ ok:true, status:200,
-                json: async () => ({ login:'probe', name:'Probe' }) }); };
-    }""")
-    page.click("#gh-verify")
-    page.wait_for_timeout(600)
-    hits = " ".join(page.evaluate("window.__hits"))
-    check("粘了之后点得动且真的发请求",
-          "api.github.com/user" in hits, hits[:60] or "一个请求都没发")
-    check("验证成功后头部显示账号", "@probe" in app(page))
-    # 把这次登录态清掉，免得影响后面几步
-    page.evaluate("() => { try { localStorage.removeItem('filmtap.github') } catch(e){} }")
 
     # ── ⑦ 库里有东西时，?demo=1 必须拒绝覆盖 ──
     # bootDemo 里有 `if (!Object.keys(load().cameras).length)` 这道判断，

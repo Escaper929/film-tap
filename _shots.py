@@ -19,35 +19,10 @@ from playwright.sync_api import sync_playwright
 BASE = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:8123"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots")
 
-# 截图里要看的登录态，令牌一律是**编造的占位值**（而且从变量拼出来，
-# 免得在这里留下一段像令牌的东西 —— 这个文件也在凭据护栏的扫描范围内）。
-# 头像用内联 SVG 而不是去拉 GitHub 的图，这样截图离线也能复现。
-GH_AVATAR = ("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 "
-             "width=%2238%22 height=%2238%22%3E%3Crect width=%2238%22 height=%2238%22 "
-             "fill=%22%23CECBF6%22/%3E%3C/svg%3E")
-
-def gh_logged_in(owner="", repo=""):
-    """造一份登录态。owner/repo 留空 = 登录了但还没选数据仓库。"""
-    return (
-        "var av = '" + GH_AVATAR + "';"
-        "var fake = 'sample' + '-not-a-real-token';"
-        "localStorage.setItem('filmtap.github', JSON.stringify({"
-        "owner:'" + owner + "', repo:'" + repo + "',"
-        "path:'data.json', branch:'main', auto:false,"
-        "token:fake, login:'escaper929', name:'Escaper', avatar:av}))"
-    )
-
-
-GH_LOGGED_IN = gh_logged_in()                                  # 登录了，还没选仓库
-GH_CONNECTED = gh_logged_in("escaper929", "film-tap-data")     # 选好了
-
-GH_REPOS = (
-    "ghRepos = ["
-    "{full_name:'escaper929/film-tap-data',   private:true},"
-    "{full_name:'escaper929/film-tap-backup', private:true},"
-    "{full_name:'escaper929/old-rolls',       private:true}];"
-    "render();"
-)
+# 截图里要看的登录态，一律是**注入的占位状态**，不是真凭据。
+# 早先这里造的是 GitHub 私有仓库的登录态（头像、令牌、仓库列表）；
+# 那整套功能已经拆掉了，现在只剩自建 NAS 这一栏 —— 它的状态是
+# “探活成功 / 会话有效”两个布尔值，注入起来不涉及任何凭据。
 
 VIEWS = [
     ("01-机库",        "/?demo=1",              "#/",            False),
@@ -60,34 +35,27 @@ VIEWS = [
     ("08-统计",        "/?demo=1&c=m6",         "#/stats",       False),
     ("09-编辑机身",     "/?demo=1&c=rollei",     "#/c/rollei/setup", False),
     ("10-空模板首页",   "/",                    "#/",            True),
-    # 配好私有仓库之后会多出「立即上传 / 从仓库拉取 / 自动同步 / 清除」四个按钮，
-    # 是另一套排版，单独出一张。写入的令牌是**编造的占位值**，不是真令牌；
-    # 而且刻意从变量传入，免得在这里留下一段像令牌的东西 ——
-    # 这个文件也在凭据护栏的扫描范围内，界面上也从不回显令牌。
-    # 11 是「手填 owner/repo」那条老路留下的状态（没有登录身份，所以头部写「已连上 GitHub」），
-    # 它和 17 是两种不同的排版：11 没有下拉、多一个「列出我的私有仓库」。
-    ("11-手填仓库已配置", "/?demo=1&c=m6",       "#/settings",    False,
-     "var fake = 'sample' + '-not-a-real-token';"
-     "localStorage.setItem('filmtap.github', JSON.stringify({"
-     "owner:'Escaper929', repo:'film-tap-data', path:'data.json',"
-     "branch:'main', auto:true, token:fake}))"),
-    # 账号向导一共三种状态，07 是「还没登录」，这两张补「登录了但没选仓库」
-    # 和「选好了仓库」—— 后者比未登录那屏多出下拉和四个按钮，是另一套排版。
-    ("16-已登录待选仓库", "/?demo=1&c=m6",       "#/settings",    False, GH_LOGGED_IN),
-    ("17-已登录已选仓库", "/?demo=1&c=m6",       "#/settings",    False, GH_CONNECTED, GH_REPOS),
-    # 库存这一组要有数据才看得出排序和过期标签，所以都带 ?demo=1。
-    ("12-胶卷库存",     "/?demo=1&c=m6",         "#/films",       False),
-    ("13-新增库存",     "/?demo=1&c=m6",         "#/films/new",   False),
-    ("14-库存导入",     "/?demo=1&c=m6",         "#/films/import",False),
+    ("11-胶卷库存",     "/?demo=1&c=m6",         "#/films",       False),
+    ("12-新增库存",     "/?demo=1&c=m6",         "#/films/new",   False),
+    ("13-库存导入",     "/?demo=1&c=m6",         "#/films/import",False),
     # 导入的第二步（对列）是整个过程里最容易出错的一屏，必须单独看一眼。
     # 它要求先把表格喂给页面，所以脚本得在**导航之后**再注入 —— 见下面 after。
-    ("15-导入对列",     "/?demo=1&c=m6",         "#/films/import",False, None,
+    ("14-导入对列",     "/?demo=1&c=m6",         "#/films/import",False, None,
      "loadImportText("
      "'型号,数量,画幅,有效期,购入日期,单价,存放\\n'"
      "+ 'Kodak Portra 400,12,135,2027-06,2026-03-12,78,冰箱\\n'"
      "+ 'Fuji 分装,3,120,2026-11,2026-08-01,45,防潮箱\\n'"
      "+ 'Adox CMS 20 II,2,,2030-01,,64,\\n'"
      ", '我的库存.csv')"),
+    # 自建 NAS 那一栏只在「页面是从自己的 NAS 打开的」时才展开，
+    # 而截图默认打的是本机静态服务器（探不到 /api/health）——
+    # 所以这里把探测结果**直接摆成探到了**再渲染：状态是注入的，排版是真的。
+    # 用 setTimeout 兜一下，避免和启动时那次异步探测（会把它改回 "no"）抢。
+    ("15-自建NAS未登录", "/?demo=1&c=m6",        "#/settings",    True,  None,
+     "setTimeout(() => { nasState='yes'; nasSess=false; render(true); }, 60);"),
+    ("16-自建NAS已连上", "/?demo=1&c=m6",        "#/settings",    True,  None,
+     "setTimeout(() => { nasState='yes'; nasSess=true;"
+     " saveNas({at:'2026-09-27T07:30:00Z'}); render(true); }, 60);"),
 ]
 
 
@@ -102,9 +70,26 @@ def main():
         )
         page = ctx.new_page()
         errs = []
+
+        def on_console(m):
+            if m.type != "error":
+                return
+            # 页面启动时会探一次 /api/health，用来判断自己是不是跑在自建后端上。
+            # 静态服务器上这个请求必然 404 —— 那正是「不是自建」这个
+            # **答案本身**，不是故障。所以只放过打到 /api/ 的 404，
+            # 别的报错照旧拦下来。
+            # ⚠️ 路径不在 m.text 里（那里只有「status of 404」这几个字），
+            #    得从 m.location 取 URL。
+            try:
+                url = (m.location or {}).get("url", "") or ""
+            except Exception:
+                url = ""
+            if "/api/" in url and "404" in m.text:
+                return
+            errs.append("console.error: " + m.text)
+
         page.on("pageerror", lambda e: errs.append(str(e)))
-        page.on("console", lambda m: errs.append("console." + m.type + ": " + m.text)
-                if m.type == "error" else None)
+        page.on("console", on_console)
 
         for row in VIEWS:
             name, path, hash_, reset = row[0], row[1], row[2], row[3]
