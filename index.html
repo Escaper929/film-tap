@@ -2325,7 +2325,7 @@ function obsShow(html){
 async function obsPreview(){
   if (nasState !== "yes" || !nasSess){ toast("先在上面连接一次"); return; }
   toast("读取中…");
-  const r = await obsAsk("/obsidian");
+  const r = await obsAsk("obsidian");
   if (r.error){ obsFail(r.error); return; }
   obsShow(obsSummaryHtml(r.body, true));
   toast(r.body.state === "ok" && !r.body.blocked ? "看完了，还没动任何数据" : (r.body.message || ""));
@@ -2334,7 +2334,7 @@ async function obsPreview(){
 async function obsSync(){
   if (nasState !== "yes" || !nasSess){ toast("先在上面连接一次"); return; }
   toast("同步中…");
-  const r = await obsAsk("/obsidian/sync", "POST");
+  const r = await obsAsk("obsidian/sync", "POST");
   if (r.error){ obsFail(r.error); return; }
 
   /* 同步之后，服务端那份才是合并过的结果 —— 把它拉回本机，

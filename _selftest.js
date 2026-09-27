@@ -905,6 +905,24 @@ try {
         " 页面不写缓存=" + pageNoCache);
 } catch (e) { check("没有离线缓存（容器停=打不开）", false, "抛异常 " + e.message); }
 
+/* ── 接口路径不许带前导斜杠 ──
+   NAS_API 是 "/api/"（自带结尾斜杠），所以路径要以**不带斜杠**的形式传进去。
+   历史：Obsidian 那两处写成了 obsAsk("/obsidian/sync")，拼出来是
+   POST /api//obsidian/sync —— 服务端按精确路径匹配，直接 404。这个 bug 从写下
+   那天起在浏览器里一次都没成功过，一路漏到线上；自检当时只断言渲染出来的 HTML
+   字符串，抓不到运行时才拼出来的 URL。这里静态钉住调用点传的字符串字面量。 */
+try {
+  const badCalls = [];
+  const re = /\b(?:nasCall|obsAsk)\(\s*(["'])([^"']*)\1/g;
+  let m2;
+  while ((m2 = re.exec(js))) {
+    if (m2[2].charAt(0) === "/") badCalls.push(m2[0].trim());
+  }
+  check("接口路径不带前导斜杠（NAS_API 自带结尾斜杠）",
+        badCalls.length === 0,
+        badCalls.length ? "有 " + badCalls.length + " 处：" + badCalls.join(" / ") : "全部干净");
+} catch (e) { check("接口路径不带前导斜杠（NAS_API 自带结尾斜杠）", false, "抛异常 " + e.message); }
+
 /* ══════════════════════════════════════════════════════════
    同步层的通用行为 —— 和具体走哪条路无关，所以放在异步段里用打桩的 fetch 跑。
    钉两件事：① 整库快照，新字段只要做成 DB 顶层字段就自动跟着走；
