@@ -850,7 +850,7 @@ try {
   const GOOD_SAMPLES = [
     "https://nas.example.com/dav/film/",
     'headers.Authorization = "Bearer " + token',            // 正确写法：令牌走变量，不进源码
-    "https://api.github.com/repos/Escaper929/film-tap-data/contents/data.json",
+    "https://api.github.com/repos/owner/repo/contents/data.json",   // 仓库路径也要用占位符
     /* 下面这两条必须放行，否则护栏会逼大家写“能通过但更糟”的代码：
        noreply 邮箱是 GitHub 推荐的防泄露写法，占位路径是文档里唯一正确的示例。 */
     "60599586+Escaper929@users.noreply.github.com",

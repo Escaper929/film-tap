@@ -183,6 +183,9 @@ Safari 的 ITP 只清**脚本能写**的存储（`localStorage` / `IndexedDB` / 
 > 同理，提交前把 noreply 邮箱设上（`git config --global user.email "<id>+<用户名>@users.noreply.github.com"`，
 > 并在 GitHub → Settings → Emails 勾上 “Keep my email addresses private”），
 > 文档里的示例路径一律写 `/path/to/...`。这几条 `_selftest.js` 都会拦。
+>
+> 部署地址（域名 + 端口）同理：别写进脚本或文档，要传就用参数或环境变量，
+> 示例一律写 `https://<你的域名>/`。脚本里带默认地址，等于把部署位置写进公开仓库。
 
 ## 联到 Obsidian（可选）
 
@@ -263,8 +266,11 @@ model/                3D 打印挂件（build_fob.py / fob.scad / preview.py / r
 node _selftest.js      # 全部视图渲染 + 张数 / 装卷 / 库存与导入 / 改名迁移 / 凭据护栏
 python _obsidian_test.py   # Obsidian 联动的解析 / 合并 / 回写（零依赖，不用真 vault）
 python _shots.py       # 需先起本地服务，截图输出到 shots/
-python _firstrun.py    # 打真实部署，走一遍「空库首次使用」（需 playwright）
+python _firstrun.py https://<你的域名>/   # 打真实部署，走一遍「空库首次使用」（需 playwright）
 ```
+
+> `_firstrun.py` 的部署地址**只能从参数或 `FT_URL` 环境变量进来**，脚本里不写死任何
+> 地址 —— 仓库是公开的，写进去就等于把部署位置一起公开出去。不给地址会直接退出（码 2）。
 
 > `_selftest.js` 在内存里造数据 + 直接跳哈希，从不点按钮、不进表单，
 > 所以「空库 → 登记第一台机身 → 装卷 → 刷新 → 数据还在」这条**每个新用户唯一会走的**

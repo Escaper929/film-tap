@@ -7,16 +7,20 @@
 装卷 → 刷新 → 数据还在」这条**每个新用户唯一会走的**路径，在自检里是完全空白的。
 这个脚本专门补它，同时顺带验证线上拿到的确实是新版（SW 有没有同步）。
 
-默认打线上那个部署（NAS 上跑着容器的那个）。之所以不打本地：
+地址必须显式给（命令行参数或 FT_URL 环境变量）—— 脚本里不写死任何部署地址：
+仓库是公开的，写进去就等于把自己的部署位置一起公开出去。
+
+建议打真实部署（NAS 上跑着容器的那个）而不是本地。之所以不默认打本地：
 「本地跑通」和「线上生效」是两件事 ——
 - 本地过、线上没过 → sw.js 忘了动，手机还在吃旧缓存
 - 线上过、本地没过 → 基本不可能，但也能立刻看出来
 
 用法（注意解释器：playwright 装在工程 venv 里，系统 python3 没有）：
 
-    PY=/path/to/your/venv/bin/python          # 换成你自己的 venv 路径
-    $PY _firstrun.py                            # NAS 上那个部署
+    PY=/path/to/your/venv/bin/python            # 换成你自己的 venv 路径
+    $PY _firstrun.py https://<你的域名>/          # 线上那个部署
     $PY _firstrun.py http://127.0.0.1:8123      # 本地静态服务
+    FT_URL=https://<你的域名>/ $PY _firstrun.py  # 也可以走环境变量
 
 拿本地静态服务跑时，设置页的 NAS 那一栏会正确地收到「这一页不是从 NAS
 打开的」—— 那个情况下跟 NAS 有关的那几条会自动跳过，不算失败。
@@ -24,14 +28,21 @@
 直接敲 `python _firstrun.py` 会报 ModuleNotFoundError: playwright —— 那不是
 脚本坏了，是解释器选错了。上面那个 venv 才是装了 playwright 的那个。
 
-退出码非 0 = 有失败项或有 JS 报错。需要 playwright（用本机已装的 Edge，
+退出码非 0 = 有失败项或有 JS 报错（2 = 没给部署地址）。需要 playwright（用本机已装的 Edge，
 不额外下载内核，跟 _shots.py 一致）。
 """
 
+import os
 import sys
 from playwright.sync_api import sync_playwright
 
-BASE = (sys.argv[1] if len(sys.argv) > 1 else "https://film.792420124.xyz:16666").rstrip("/")
+# 部署地址只从命令行或 FT_URL 进来 —— 不写死在脚本里，
+# 否则提交进公开仓库就等于把部署位置公开出去。
+BASE = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("FT_URL", "")).rstrip("/")
+if not BASE:
+    print("用法：_firstrun.py <部署地址>   或   FT_URL=<部署地址> _firstrun.py")
+    print("地址不写死在脚本里 —— 仓库是公开的，写进去就等于公开你的部署位置。")
+    sys.exit(2)
 
 ok, bad = [], []
 
