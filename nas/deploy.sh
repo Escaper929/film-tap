@@ -16,11 +16,12 @@
 #   UID_GID              容器以哪个 uid:gid 跑，默认 1000:1001（数据文件归你，不归 root）
 #   IMAGE                镜像，默认 docker.io/liritian/film-tap:latest
 #   FT_PASSWORD          只在**首次**初始化密码时用；不设就自己进去跑一次 --set-password
-#   VAULT_DIR            可选。NAS 上 Obsidian vault 的目录（含那份胶卷清单）。
+#   VAULT_DIR            可选。NAS 上**放着清单笔记的那一层目录** —— 默认布局是
+#                        50_Assets，不是 vault 根（填 vault 根会找不到笔记）。
+#                        只挂这一层就够，容器拿到的写权限越小越好。
 #                        设了才把「从 Obsidian 同步」打通：目录挂到 /vault（读写），
 #                        并把笔记路径经 FT_OBSIDIAN 传进容器。不设就整块停用
-#   VAULT_FILE           可选。笔记在 vault 里的相对路径，默认 胶卷库存清单.md；
-#                        可以带子目录，如 50_Assets/胶卷库存清单.md
+#   VAULT_FILE           可选。笔记在 VAULT_DIR 里的相对路径，默认 胶卷库存清单.md
 #   WATCHTOWER           yes | no，默认 yes。no 就只部署不装自动更新
 #   WATCHTOWER_IMAGE     默认 nickfedor/watchtower:latest
 #   WATCHTOWER_INTERVAL  轮询间隔秒数，默认 3600
@@ -78,7 +79,7 @@ echo "→ 目标 ${NAS_USER}@${NAS_HOST}:${SSH_PORT}"
 echo "  根目录 ${BASE}   对外 ${PORT} → 容器 ${CONTAINER_PORT}（只绑回环）"
 echo "  镜像 ${IMAGE}"
 if [ -n "${VAULT_DIR:-}" ]; then
-  echo "  Obsidian：${VAULT_DIR}/${VAULT_FILE} → /vault（容器内读写）"
+  echo "  Obsidian：${VAULT_DIR}/${VAULT_FILE} → /vault（容器内读写，只挂这一层）"
 else
   echo "  Obsidian：没设 VAULT_DIR，这一块停用"
 fi

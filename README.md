@@ -52,8 +52,8 @@ NAS_HOST=<你的 NAS 地址> NAS_USER=<SSH 用户> SSH_PORT=<SSH 端口> ./nas/d
 | `UID_GID` | `1000:1001` | 容器以哪个身份跑，让数据文件归你而不是 root |
 | `IMAGE` | `docker.io/liritian/film-tap:latest` | 换标签就能固定版本 |
 | `FT_PASSWORD` | 空 | 只在首次初始化密码时用 |
-| `VAULT_DIR` | 空 | Obsidian vault 目录；设了才挂到 `/vault` 并打开「从 Obsidian 同步」 |
-| `VAULT_FILE` | `胶卷库存清单.md` | 笔记在 vault 里的相对路径，可带子目录 |
+| `VAULT_DIR` | 空 | **放着清单笔记的那一层目录**（默认是 `50_Assets`，不是 vault 根）；设了才挂到 `/vault` 并打开「从 Obsidian 同步」 |
+| `VAULT_FILE` | `胶卷库存清单.md` | 笔记在 `VAULT_DIR` 里的相对路径 |
 | `WATCHTOWER` | `yes` | 设 `no` 就不装自动更新 |
 
 首次设一次密码（以后改密码是同一条命令，也可以不设 `FT_PASSWORD` 手动跑）：
@@ -213,11 +213,15 @@ Safari 的 ITP 只清**脚本能写**的存储（`localStorage` / `IndexedDB` / 
 打开方式（vault 与 App 在同一台 NAS 上）：
 
 ```bash
-NAS_HOST=<你的 NAS 地址> VAULT_DIR=/vol1/1000/ObsidianVault/obsidian ./nas/deploy.sh
+NAS_HOST=<你的 NAS 地址> VAULT_DIR=/vol1/1000/ObsidianVault/obsidian/50_Assets ./nas/deploy.sh
 ```
 
-`VAULT_DIR` 会挂到容器内的 `/vault`（读写），笔记路径经 `VAULT_FILE` 传进去
-（默认 `胶卷库存清单.md`，可带子目录）。不设 `VAULT_DIR` 就整块停用，App 照常用。
+`VAULT_DIR` 要指向**放着清单笔记的那一层目录** —— 默认布局下是 `50_Assets`，
+不是 vault 根（填 vault 根会找不到笔记）。它会以读写方式挂到容器内的 `/vault`，
+笔记文件由 `VAULT_FILE` 指定（默认 `胶卷库存清单.md`）。
+
+**只挂 `50_Assets` 这一层，不要挂整个 vault** —— 容器只拿到它需要的最小写权限。
+`VAULT_DIR` 不设就整块停用，App 照常用。
 
 笔记这边只有两个要求：有一个 `## 胶卷列表` 小节，里面是 markdown 表格；
 表头里能认出**型号、格式、数量**三列（其余的序号 / 类型 / ISO / 状态 / 购买时间 /
