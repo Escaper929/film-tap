@@ -61,6 +61,7 @@ const SHIPPED = [
   "README.md", "_selftest.js", "_shots.py", "_firstrun.py", "_obsidian_test.py",
   "model/build_fob.py", "model/fob.scad", "model/preview.py", "model/render.py",
   "nas/server.py", "nas/deploy.sh", "nas/update.sh",
+  "nas/watchtower-cron.sh", "nas/filmtap-update.sh",
   "Dockerfile", ".dockerignore", ".github/workflows/docker.yml"
 ];
 for (const f of SHIPPED) {

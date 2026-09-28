@@ -5,13 +5,17 @@
 #   NAS_HOST=<你的 NAS 地址> NAS_USER=<用户> SSH_PORT=<SSH 端口> ./nas/update.sh
 #
 # 它只是拿 watchtower 的 --run-once 跑一遍：查 Docker Hub、有新镜像就重建容器。
-# 所以**就算 deploy 时用了 WATCHTOWER=no**（不想把 docker.sock 交给
-# 常驻容器），这个脚本照样能用 —— 它是一次性的，跑完就退。
+# 所以**哪怕没装常驻的 watchtower**（deploy.sh 现在默认就不装），这个脚本照样
+# 能用 —— 它是一次性的，跑完就退。
 #
 # 更新不会碰数据：data.json / config.json / sessions.json / history 都在
 # ${BASE}/data 这个卷里，容器换了卷不动。所以更新之后不用重新登录。
 #
-# 环境变量：NAS_HOST（必填）、NAS_USER、SSH_PORT、WATCHTOWER_IMAGE、WATCHTOWER_INTERVAL
+# 注意：Docker Hub 连不上时 watchtower 会**静默跳过**（退出码 0、容器不动）。
+# 想要每天自动跑，且把这种情况记进日志，用 ./nas/watchtower-cron.sh。
+#
+# 环境变量：NAS_HOST（必填）、NAS_USER、SSH_PORT（默认空 = 交给 ssh 决定）、
+#           WATCHTOWER_IMAGE
 set -euo pipefail
 
 need(){ command -v "$1" >/dev/null 2>&1 || { echo "缺少 $1" >&2; exit 1; }; }
@@ -19,11 +23,17 @@ need ssh
 
 : "${NAS_HOST:?请先给 NAS_HOST，例如 NAS_HOST=nas.example.lan ./nas/update.sh}"
 NAS_USER="${NAS_USER:-$(id -un)}"
-SSH_PORT="${SSH_PORT:-22}"
+SSH_PORT="${SSH_PORT:-}"
 NAME="film-tap"
 WATCHTOWER_IMAGE="${WATCHTOWER_IMAGE:-nickfedor/watchtower:latest}"
+WATCHTOWER_INTERVAL="${WATCHTOWER_INTERVAL:-3600}"
 
-SSH=(ssh -p "${SSH_PORT}" "${NAS_USER}@${NAS_HOST}")
+# SSH_PORT 留空就不传 -p，让 ssh 自己决定（~/.ssh/config 优先，否则 22）。
+# 可选参数拼成字符串而不用数组，理由同 deploy.sh。
+SSH_PORT_OPT=""
+[ -n "${SSH_PORT}" ] && SSH_PORT_OPT="-p ${SSH_PORT}"
+
+SSH=(ssh ${SSH_PORT_OPT} "${NAS_USER}@${NAS_HOST}")
 
 echo "→ 更新前："
 "${SSH[@]}" "docker image inspect --format '  当前镜像 {{.Id}}（{{.Created}}）' \$(docker inspect -f '{{.Image}}' ${NAME}) 2>/dev/null || echo '  （取不到，容器可能不在）'"

@@ -40,13 +40,13 @@ NAS 上由 watchtower 自动更新。仓库里没有任何一行属于你的数�
 NAS_HOST=<你的 NAS 地址> NAS_USER=<SSH 用户> SSH_PORT=<SSH 端口> ./nas/deploy.sh
 ```
 
-脚本做的事：拉镜像 → 建 `<部署根>/data` → 起容器（**只挂 data 卷**）→
-可选设一次密码 → 起 watchtower。
+脚本做的事：拉镜像 → 建 `<部署根>/data` → 起容器（**只挂 data 卷**）→ 可选设一次密码。
+**自动更新默认不开**，装哪条见下面「怎么更新」。
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `NAS_HOST` | 必填 | NAS 地址 |
-| `NAS_USER` / `SSH_PORT` | 当前用户 / 22 | SSH |
+| `NAS_HOST` | 必填 | NAS 地址（也可以写 `~/.ssh/config` 里的 Host 名） |
+| `NAS_USER` / `SSH_PORT` | 当前用户 / 空 | SSH。`SSH_PORT` 留空就让 ssh 自己定（先看 `~/.ssh/config`，否则 22）—— NAS 的 SSH 端口不是 22 的话，在 `~/.ssh/config` 里配一次，之后就不用每次传 |
 | `BASE` | `/vol1/@appdata/film-tap` | 部署根，只用来放 `data/` |
 | `PORT` | `8300` | 对外端口（容器内部固定 8300，这里只映射） |
 | `UID_GID` | `1000:1001` | 容器以哪个身份跑，让数据文件归你而不是 root |
@@ -54,7 +54,7 @@ NAS_HOST=<你的 NAS 地址> NAS_USER=<SSH 用户> SSH_PORT=<SSH 端口> ./nas/d
 | `FT_PASSWORD` | 空 | 只在首次初始化密码时用 |
 | `VAULT_DIR` | 空 | **放着清单笔记的那一层目录**（默认是 `50_Assets`，不是 vault 根）；设了才挂到 `/vault` 并打开「从 Obsidian 同步」 |
 | `VAULT_FILE` | `胶卷库存清单.md` | 笔记在 `VAULT_DIR` 里的相对路径 |
-| `WATCHTOWER` | `yes` | 设 `no` 就不装自动更新 |
+| `WATCHTOWER` | `no` | `yes` 才装**常驻** watchtower（要长期交出 docker.sock）。默认不装，自动更新走 `nas/watchtower-cron.sh` |
 
 首次设一次密码（以后改密码是同一条命令，也可以不设 `FT_PASSWORD` 手动跑）：
 
@@ -65,27 +65,37 @@ ssh -p <SSH 端口> -t <SSH 用户>@<你的 NAS 地址> \
 
 反代加一条：域名 → `http://127.0.0.1:8300`（按域名分流，TLS 一张泛域名证书即可）。
 
-想立刻更新一次、不等 watchtower 轮询：
+### 怎么更新
+
+三条路，按「省心」和「交出去多少」权衡。前两条用的都是**一次性** watchtower
+（`--run-once`，跑完就退），docker socket 只在那一小段运行期间暴露。
 
 ```bash
+# ① 现在手动更新一次（不装任何常驻容器）
 NAS_HOST=<你的 NAS 地址> ./nas/update.sh
+
+# ② 装每日自动更新：往 NAS 放一支脚本 + 一条 cron（推荐）
+NAS_HOST=<你的 NAS 地址> NAS_USER=<SSH 用户> ./nas/watchtower-cron.sh
 ```
 
-它只是让 watchtower 跑一遍 `--run-once`，所以**就算 `WATCHTOWER=no` 也能用** ——
-那是一次性容器，跑完就退，不需要把 docker socket 交给一个常驻容器。
+③ 想要最及时，就在部署时显式 `WATCHTOWER=yes` —— 起一个**常驻** watchtower，
+按 `WATCHTOWER_INTERVAL` 查一次。代价是那个容器 24 小时挂着 `/var/run/docker.sock`。
 
-> ⚠️ **watchtower 要挂 `/var/run/docker.sock`，等于把 NAS 的 Docker 控制权交给它。**
-> 脚本用 `--label-enable` 把它限制在自己打了标签的容器上，不会碰 NAS 上别的容器。
-> 不想要这条通道就 `WATCHTOWER=no`，改用 `nas/update.sh` 手动更新。
+> ⚠️ **watchtower 挂 `/var/run/docker.sock`，等于把 NAS 的 Docker 控制权交给它。**
+> 三条路都用 `--label-enable` 把它限制在自己打了标签的容器上，不会碰 NAS 上别的容器。
 > 另外注意自动更新意味着**升级时机不由你决定**；数据在 `data` 卷里，
 > 回滚就是换个标签再起一次（`IMAGE=docker.io/liritian/film-tap:sha-xxxxxxx`）。
+
+> ⚠️ **Docker Hub 连不上时 watchtower 会静默跳过** —— 退出码 0、容器不动、什么都不报。
+> 所以 `nas/filmtap-update.sh` 结尾特意把「容器在用的镜像」和「镜像名现在指向的」
+> 两个 ID 打出来对比，不一致就是这次没更成。走 ② 的话日志在 NAS 的 `~/.filmtap-update.log`。
 
 ### 镜像怎么来的
 
 ```
 push 到 main / 打 v* 标签
    → GitHub Actions：① node _selftest.js → ② 构建 → ③ 拿真镜像起容器冒烟 → ④ 推 Docker Hub
-   → NAS 上的 watchtower（每小时查一次）拉新版重建容器
+   → NAS 上更新：cron 每天跑一次一次性 watchtower（或常驻 watchtower / 手动 update.sh）
 ```
 
 推的是 **Docker Hub 而不是 GHCR**，理由只有一个字：拉得到。`ghcr.io` 在国内经常拉不动，
@@ -96,7 +106,7 @@ push 到 main / 打 v* 标签
 三道门是有意的顺序：① 自检不过就**不构建**（视图渲染、数据流、凭据护栏、以及
 「没有离线缓存」那条都在里面）；② 构建之后**再拿真镜像起容器**走一遍探活 → 设密码 →
 登录 → 存 → 读 → 未登录 401（光看「构建成功」证明不了 `COPY` 没漏文件）；③ `latest`
-要等冒烟过了才指过去，否则坏镜像会被 watchtower 一小时内拉下来。标签：`latest` 跟 main，
+要等冒烟过了才指过去，否则坏镜像会被下一次自动更新拉下来。标签：`latest` 跟 main，
 `sha-<短哈希>` 每个提交一个。
 
 ## 怎么用
@@ -274,8 +284,10 @@ Dockerfile            镜像定义：把上面三个 + server.py 装进去
   docker.yml          自检 → 构建 → 真镜像冒烟 → 推 Docker Hub
 nas/                  后端与部署
   server.py           零第三方依赖的单文件后端：静态 + 会话 + 数据 API
-  deploy.sh           幂等部署（拉镜像、起容器、装 watchtower）
+  deploy.sh           幂等部署（拉镜像、起容器、可选装常驻 watchtower）
   update.sh           立刻更新一次（让 watchtower 跑 --run-once）
+  watchtower-cron.sh  在 NAS 上装「每天跑一次一次性 watchtower」的 cron
+  filmtap-update.sh   上面那条 cron 实际跑的脚本（装到 NAS 的 home 下）
 _selftest.js          Node + DOM 桩，跑全部视图与数据流的断言
 _obsidian_test.py     Obsidian 联动的后端用例（解析 / 增量合并 / 回写逐字节保留）
 _shots.py             playwright 驱动本机 Edge 出界面截图 → shots/

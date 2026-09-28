@@ -4,13 +4,14 @@
 #
 #   NAS_HOST=<你的 NAS 地址> NAS_USER=<用户> SSH_PORT=<SSH 端口> ./nas/deploy.sh
 #
-# 它做的事：拉镜像 → 起容器（只挂 data 卷）→ 设密码 → 起 watchtower 自动更新。
+# 它做的事：拉镜像 → 起容器（只挂 data 卷）→ 设密码。自动更新默认**不开**，
+# 见下面的 WATCHTOWER 一条。
 # **不再往 NAS 上传任何源码** —— 代码在镜像里，镜像由 GitHub Actions 构建。
 #
 # 环境变量（除 NAS_HOST 外都有默认值）：
-#   NAS_HOST             必填。NAS 的地址
+#   NAS_HOST             必填。NAS 的地址（也可以写 ~/.ssh/config 里的 Host 名）
 #   NAS_USER             SSH 用户，默认当前用户
-#   SSH_PORT             SSH 端口，默认 22
+#   SSH_PORT             SSH 端口。默认空 —— 不传就让 ssh 自己去定（~/.ssh/config，否则 22）
 #   BASE                 部署根目录，默认 /vol1/@appdata/film-tap（只用来放 data）
 #   PORT                 对外端口，默认 8300。容器内部固定 8300，这里只映射
 #   UID_GID              容器以哪个 uid:gid 跑，默认 1000:1001（数据文件归你，不归 root）
@@ -22,7 +23,7 @@
 #                        设了才把「从 Obsidian 同步」打通：目录挂到 /vault（读写），
 #                        并把笔记路径经 FT_OBSIDIAN 传进容器。不设就整块停用
 #   VAULT_FILE           可选。笔记在 VAULT_DIR 里的相对路径，默认 胶卷库存清单.md
-#   WATCHTOWER           yes | no，默认 yes。no 就只部署不装自动更新
+#   WATCHTOWER           yes | no，默认 no（不装常驻自动更新，见设计笔记 ③）
 #   WATCHTOWER_IMAGE     默认 nickfedor/watchtower:latest
 #   WATCHTOWER_INTERVAL  轮询间隔秒数，默认 3600
 #
@@ -36,11 +37,14 @@
 #    走反代。多一层还是少一层，区别是「局域网上任何一台设备都能直接打这个端口」
 #    和「只有本机能打」。反代在本机，所以它连得上。
 #
-# ③ 自动更新用 watchtower，但**限定它只管打了标签的容器**
-#    （--label-enable + com.centurylinklabs.watchtower.enable）。
-#    不加这一条的话，它会顺手去重建 NAS 上所有别的容器 —— 那些是别人配的。
-#    ⚠️ watchtower 要挂 /var/run/docker.sock，等同于把 NAS 的 Docker 控制权
-#    交给这个容器。不想要这条通道就把 WATCHTOWER=no，改用 nas/update.sh 手动更新。
+# ③ 自动更新默认**不开**。两条路，都要你显式选：
+#      WATCHTOWER=yes（本脚本）→ 起一个常驻 watchtower，更新最及时；但它要挂
+#        /var/run/docker.sock，等于把那台 NAS 的 Docker 控制权长期交给它。
+#      ./nas/watchtower-cron.sh（推荐）→ 每天跑一次一次性 watchtower，跑完就退，
+#        socket 只在那一小段运行期间暴露，代价是更新最多晚一天。
+#    两条都**限定它只管打了标签的容器**（--label-enable +
+#    com.centurylinklabs.watchtower.enable）。不加的话它会顺手去重建 NAS 上
+#    所有别的容器 —— 那些是别人配的。
 #
 # 回滚：docker rm -f film-tap watchtower && rm -rf "$BASE"
 #       这个脚本没有碰过 NAS 上任何别的东西，反代那条规则在管理界面上删掉即可。
@@ -49,15 +53,15 @@ set -euo pipefail
 need(){ command -v "$1" >/dev/null 2>&1 || { echo "缺少 $1" >&2; exit 1; }; }
 need ssh
 
-: "${NAS_HOST:?请先给 NAS_HOST，例如 NAS_HOST=nas.example.lan NAS_USER=someone SSH_PORT=22 ./nas/deploy.sh}"
+: "${NAS_HOST:?请先给 NAS_HOST，例如 NAS_HOST=nas.example.lan NAS_USER=someone ./nas/deploy.sh}"
 NAS_USER="${NAS_USER:-$(id -un)}"
-SSH_PORT="${SSH_PORT:-22}"
+SSH_PORT="${SSH_PORT:-}"
 BASE="${BASE:-/vol1/@appdata/film-tap}"
 PORT="${PORT:-8300}"
 UID_GID="${UID_GID:-1000:1001}"
 IMAGE="${IMAGE:-docker.io/liritian/film-tap:latest}"
 NAME="film-tap"
-WATCHTOWER="${WATCHTOWER:-yes}"
+WATCHTOWER="${WATCHTOWER:-no}"
 WATCHTOWER_IMAGE="${WATCHTOWER_IMAGE:-nickfedor/watchtower:latest}"
 WATCHTOWER_INTERVAL="${WATCHTOWER_INTERVAL:-3600}"
 
@@ -73,9 +77,18 @@ if [ -n "${VAULT_DIR:-}" ]; then
   VAULT_MOUNT="-v '${VAULT_DIR}:/vault:rw' -e FT_OBSIDIAN='/vault/${VAULT_FILE}'"
 fi
 
-SSH=(ssh -p "${SSH_PORT}" "${NAS_USER}@${NAS_HOST}")
+# SSH_PORT 留空就完全不传 -p，让 ssh 自己决定端口（~/.ssh/config 优先，否则 22）。
+# 这样 NAS_HOST 可以直接写成 ~/.ssh/config 里的 Host 名。**别把某个人的具体端口
+# 写进默认值** —— 仓库是公开的，写进去等于把部署位置一起公开。
+#
+# 可选参数拼成字符串而不用数组：set -u 下空数组展开在老 bash 上会报错
+# （macOS 自带的 bash 3.2 就是），VAULT_MOUNT 也是同一个理由。
+SSH_PORT_OPT=""
+[ -n "${SSH_PORT}" ] && SSH_PORT_OPT="-p ${SSH_PORT}"
 
-echo "→ 目标 ${NAS_USER}@${NAS_HOST}:${SSH_PORT}"
+SSH=(ssh ${SSH_PORT_OPT} "${NAS_USER}@${NAS_HOST}")
+
+echo "→ 目标 ${NAS_USER}@${NAS_HOST}（SSH 端口 ${SSH_PORT:-由 ssh 决定}）"
 echo "  根目录 ${BASE}   对外 ${PORT} → 容器 ${CONTAINER_PORT}（只绑回环）"
 echo "  镜像 ${IMAGE}"
 if [ -n "${VAULT_DIR:-}" ]; then
@@ -118,7 +131,7 @@ if [ -n "${FT_PASSWORD:-}" ]; then
     | "${SSH[@]}" "docker exec -i ${NAME} python3 /app/server.py --set-password"
 else
   echo "→ 没给 FT_PASSWORD。密码要你自己设（不经过命令行参数，不会进 ps）："
-  echo "   ssh -p ${SSH_PORT} -t ${NAS_USER}@${NAS_HOST} 'docker exec -it ${NAME} python3 /app/server.py --set-password'"
+  echo "   ssh ${SSH_PORT_OPT} -t ${NAS_USER}@${NAS_HOST} 'docker exec -it ${NAME} python3 /app/server.py --set-password'"
 fi
 
 if [ "${WATCHTOWER}" = "yes" ]; then
@@ -129,7 +142,9 @@ if [ "${WATCHTOWER}" = "yes" ]; then
     ${WATCHTOWER_IMAGE} \
     --label-enable --cleanup --interval ${WATCHTOWER_INTERVAL} >/dev/null"
 else
-  echo "→ WATCHTOWER=no：跳过自动更新。想更新时跑 ./nas/update.sh"
+  echo "→ WATCHTOWER=no（默认）：不装常驻的自动更新。两条替代——"
+  echo "   现在更新一次： ./nas/update.sh"
+  echo "   每天自动更新： ./nas/watchtower-cron.sh  （一次性 watchtower，跑完就退）"
 fi
 
 sleep 1
@@ -137,4 +152,5 @@ echo "→ 探活"
 "${SSH[@]}" "curl -sS -m 5 http://127.0.0.1:${PORT}/api/health" && echo
 echo
 echo "容器起来了。反代那边把域名指到  http://127.0.0.1:${PORT}"
-echo "以后项目更新：GitHub 自动出镜像，watchtower 自己拉。想立刻更新跑 ./nas/update.sh"
+echo "以后项目更新：GitHub 自动出镜像。自动更新装 ./nas/watchtower-cron.sh，"
+echo "想立刻更新一次跑 ./nas/update.sh。"
