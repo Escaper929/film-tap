@@ -1558,10 +1558,11 @@ function renderObsidianSection(){
   let h = '<h2>从 Obsidian 同步胶卷库存</h2>';
   h += '<div class="card" style="padding:16px 18px">'
      + '<div style="font-size:14px;color:var(--ink-2);line-height:1.7">'
-     + '把 NAS 上那份胶卷清单笔记，和这里的库存对一遍。只认三列 —— '
-     + '<b>品牌/型号、格式、数量</b>：笔记里别的列、别的板块<b>一个字节都不动</b>。<br>'
-     + '数量是<b>带基线</b>地合并的：你在笔记里买了卷、在 App 里装了卷，'
-     + '两边同时改也不会互相盖掉；回写时只替换数量那一格里的数字。</div>';
+     + '库存的<b>唯一真源</b>是 NAS 上的<b>胶卷账本</b>（期初 + 流水）。'
+     + '这里只做两件事：按账本重算<b>胶卷库存清单</b>，'
+     + '并把你在这里装掉的卷追加成一条「消耗」流水。<br>'
+     + '账本的「期初」是冻结快照，<b>一个字都不动</b>；'
+     + '清单这一份是生成物，回写时只替换数量那一格里的数字。</div>';
   h += '</div>';
   h += '<div class="row">'
      +   '<button class="btn" onclick="obsPreview()">先看会改什么</button>'
@@ -2240,16 +2241,19 @@ async function nasPull(){
 }
 
 /* ══════════ 从 Obsidian 同步 ══════════
-   NAS 上那个进程去读 NAS 上那份笔记，所以这里只是「按一下、转达结果」。
+   NAS 上那个进程去读 NAS 上那两份笔记，所以这里只是「按一下、转达结果」。
    两条路：
      GET  /api/obsidian       只读预览，一个字节都不动
-     POST /api/obsidian/sync  真执行（读 → 合并 → 写 data.json → 回写笔记 → 存基线）
+     POST /api/obsidian/sync  真执行（读账本 → 重算 → 写 data.json
+                                  → 回写清单 → 追加账本流水 → 存基线）
    失败的说法跟 NAS 那一栏同一套：先分「连不上 / 会话没了」，再谈别的。 */
-async function obsAsk(path, method){
-  const res = await nasCall(path, {
-    method: method || "GET",
-    headers: { "Accept":"application/json" }
-  });
+async function obsAsk(path, method, payload){
+  const opt = { method: method || "GET", headers: { "Accept":"application/json" } };
+  if (payload){
+    opt.headers["Content-Type"] = "application/json";
+    opt.body = JSON.stringify(payload);
+  }
+  const res = await nasCall(path, opt);
   if (!res) return { error:"连不上服务端" };
   if (res.status === 401) return { error:"unauthorized" };
   let j = null;
@@ -2277,15 +2281,59 @@ function obsSummaryHtml(body, preview){
   let h = '<div class="banner ' + (bad ? "w" : "i") + '" style="margin-top:12px">'
         + esc(body.message || "") + '</div>';
 
-  const changes = body.changes || [];
-  if (changes.length){
+  /* 要往账本追加的流水。这一块是「账本为什么仍然完整」的凭据：
+     你在这里装掉的每一卷，都会变成一条带符号的流水行，落在账本的表尾。 */
+  const appended = body.appended || [];
+  if (appended.length){
     h += '<div class="card" style="padding:12px 16px">';
     h += '<div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">'
-       + (preview ? "会改成这样" : "已经改成这样") + '（' + changes.length + ' 行）</div>';
-    for (const c of changes){
-      const from = (c.old === null || c.old === undefined) ? "—" : c.old;
-      const why = c.basis === "obsidian" ? "以笔记为准"
-                : (c.action === "same" ? "回写笔记" : "两边合并");
+       + (preview ? "会往账本追加这些流水" : "已经往账本追加了这些流水")
+       + '（' + appended.length + ' 条）</div>';
+    for (const a of appended){
+      h += '<div style="padding:6px 0;border-top:1px solid var(--line)">'
+         + '<div style="display:flex;gap:10px;align-items:baseline">'
+         +   '<div style="flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+         +     esc(a.stock) + '</div>'
+         +   '<div class="mono" style="color:var(--ink-3);flex:none">' + esc(a.format || "") + '</div>'
+         + '</div>'
+         + '<div class="mono" style="font-size:13px;color:var(--ink-2);margin-top:3px">'
+         +   esc(a.date || "—") + '　' + esc(a.type || "") + '　'
+         +   '<b style="color:var(--ink)">' + (a.qty > 0 ? "+" : "") + esc(a.qty) + '</b>'
+         + '</div></div>';
+    }
+    h += '</div>';
+  }
+
+  /* 拍完换卷的那一刻，会往拍摄记录里追一行。它不参与任何累加，只是一份日志。 */
+  const shots = body.shots || [];
+  if (shots.length){
+    h += '<div class="card" style="padding:12px 16px">';
+    h += '<div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">'
+       + (preview ? "会往拍摄记录追加这些行" : "已经往拍摄记录追加了这些行")
+       + '（' + shots.length + ' 行）</div>';
+    for (const s of shots){
+      h += '<div style="padding:6px 0;border-top:1px solid var(--line)">'
+         + '<div style="display:flex;gap:10px;align-items:baseline">'
+         +   '<div style="flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+         +     esc(s.stock) + '</div>'
+         +   '<div class="mono" style="color:var(--ink-3);flex:none">' + esc(s.camera || "") + '</div>'
+         + '</div>'
+         + '<div class="mono" style="font-size:13px;color:var(--ink-2);margin-top:3px">'
+         +   '退卷 ' + esc(s.unloaded || "—") + '</div></div>';
+    }
+    h += '</div>';
+  }
+
+  /* 重算前后。差值多半来自账本那一侧（Hermes 记了一笔购入），
+     也就是「账本为准」真的落到了这里的库存上。 */
+  const recalc = body.recalc || [];
+  if (recalc.length){
+    h += '<div class="card" style="padding:12px 16px">';
+    h += '<div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">'
+       + (preview ? "重算后这里的库存会变成" : "重算后这里的库存")
+       + '（' + recalc.length + ' 款）</div>';
+    for (const c of recalc){
+      const from = (c.was === null || c.was === undefined) ? "—" : c.was;
       h += '<div style="padding:6px 0;border-top:1px solid var(--line)">'
          + '<div style="display:flex;gap:10px;align-items:baseline">'
          +   '<div style="flex:1;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
@@ -2293,9 +2341,8 @@ function obsSummaryHtml(body, preview){
          +   '<div class="mono" style="color:var(--ink-3);flex:none">' + esc(c.format || "") + '</div>'
          + '</div>'
          + '<div class="mono" style="font-size:13px;color:var(--ink-2);margin-top:3px">'
-         +   esc(from) + ' → <b style="color:var(--ink)">' + esc(c.new) + '</b>'
-         +   '<span style="color:var(--ink-3)">　' + esc(why) + '</span></div>'
-         + '</div>';
+         +   esc(from) + ' → <b style="color:var(--ink)">' + esc(c.now) + '</b>'
+         + '</div></div>';
     }
     h += '</div>';
   }
@@ -2305,14 +2352,13 @@ function obsSummaryHtml(body, preview){
     h += '<div class="hint">有 ' + skipped.length + ' 行没能读出来，都原样留着没动：'
        + esc(skipped.map(s => "第" + s.line + "行（" + s.reason + "）").join("；")) + '</div>';
   }
-  const unmatched = body.unmatched || [];
-  if (unmatched.length){
-    h += '<div class="hint">这里的库存有 ' + unmatched.length + ' 种在笔记那张表里找不到，'
-       + '这次没删它们（同步只按笔记来，不会替你删东西）。</div>';
-  }
   const warnings = body.warnings || [];
   if (warnings.length){
     h += '<div class="hint" style="color:var(--warn)">' + esc(warnings.join("；")) + '</div>';
+  }
+  if (body.listWrites === "rebuild"){
+    h += '<div class="hint">清单里的款式有增减，这次把那张表整段重建了一遍'
+       + '（表头与分隔行留着，数据行按账本顺序重排）。</div>';
   }
   return h;
 }
@@ -2334,7 +2380,7 @@ async function obsPreview(){
 async function obsSync(){
   if (nasState !== "yes" || !nasSess){ toast("先在上面连接一次"); return; }
   toast("同步中…");
-  const r = await obsAsk("obsidian/sync", "POST");
+  const r = await obsAsk("obsidian/sync", "POST", { today: todayLocal() });
   if (r.error){ obsFail(r.error); return; }
 
   /* 同步之后，服务端那份才是合并过的结果 —— 把它拉回本机，

@@ -17,12 +17,18 @@
 #   UID_GID              容器以哪个 uid:gid 跑，默认 1000:1001（数据文件归你，不归 root）
 #   IMAGE                镜像，默认 docker.io/liritian/film-tap:latest
 #   FT_PASSWORD          只在**首次**初始化密码时用；不设就自己进去跑一次 --set-password
-#   VAULT_DIR            可选。NAS 上**放着清单笔记的那一层目录** —— 默认布局是
+#   VAULT_DIR            可选。NAS 上**放着那几份笔记的那一层目录** —— 默认布局是
 #                        50_Assets，不是 vault 根（填 vault 根会找不到笔记）。
 #                        只挂这一层就够，容器拿到的写权限越小越好。
 #                        设了才把「从 Obsidian 同步」打通：目录挂到 /vault（读写），
-#                        并把笔记路径经 FT_OBSIDIAN 传进容器。不设就整块停用
-#   VAULT_FILE           可选。笔记在 VAULT_DIR 里的相对路径，默认 胶卷库存清单.md
+#                        并把笔记路径经 FT_OBSIDIAN / FT_OBSIDIAN_LEDGER /
+#                        FT_OBSIDIAN_SHOTS 传进容器。不设就整块停用
+#   VAULT_FILE           可选。库存清单（生成物）在 VAULT_DIR 里的相对路径，
+#                        默认 胶卷库存清单.md
+#   VAULT_LEDGER         可选。胶卷账本（唯一真源）在 VAULT_DIR 里的相对路径，
+#                        默认 胶卷账本.md
+#   VAULT_SHOTS          可选。拍摄记录（film-tap 追「拍完换卷」那一行）的相对路径，
+#                        默认 胶卷拍摄记录.md。不想让它写这份就设为空字符串关掉
 #   WATCHTOWER           yes | no，默认 no（不装常驻自动更新，见设计笔记 ③）
 #   WATCHTOWER_IMAGE     默认 nickfedor/watchtower:latest
 #   WATCHTOWER_INTERVAL  轮询间隔秒数，默认 3600
@@ -68,13 +74,20 @@ WATCHTOWER_INTERVAL="${WATCHTOWER_INTERVAL:-3600}"
 # 容器里固定监听 8300（镜像里的 FT_PORT），外面看到的端口由 PORT 决定。
 CONTAINER_PORT=8300
 
-# Obsidian 联动：只有给了 VAULT_DIR 才挂 /vault 并传 FT_OBSIDIAN。
+# Obsidian 联动：只有给了 VAULT_DIR 才挂 /vault，并传笔记路径。
+# 清单和账本两个都必须有 —— 少一个后端就整块停用（没账本就无从重算，没清单就没地方写）。
+# 拍摄记录是可选的：设了才写，设成空字符串就是「关掉这一块」。
 # 拼成一个字符串（不用数组）是为了在 set -u 下空展开也安全，也跟本文件
 # 「单引号嵌在 ssh 双引号里」的写法一致。
 VAULT_MOUNT=""
 if [ -n "${VAULT_DIR:-}" ]; then
   VAULT_FILE="${VAULT_FILE:-胶卷库存清单.md}"
-  VAULT_MOUNT="-v '${VAULT_DIR}:/vault:rw' -e FT_OBSIDIAN='/vault/${VAULT_FILE}'"
+  VAULT_LEDGER="${VAULT_LEDGER:-胶卷账本.md}"
+  VAULT_SHOTS="${VAULT_SHOTS-胶卷拍摄记录.md}"
+  VAULT_MOUNT="-v '${VAULT_DIR}:/vault:rw' -e FT_OBSIDIAN='/vault/${VAULT_FILE}' -e FT_OBSIDIAN_LEDGER='/vault/${VAULT_LEDGER}'"
+  if [ -n "${VAULT_SHOTS}" ]; then
+    VAULT_MOUNT="${VAULT_MOUNT} -e FT_OBSIDIAN_SHOTS='/vault/${VAULT_SHOTS}'"
+  fi
 fi
 
 # SSH_PORT 留空就完全不传 -p，让 ssh 自己决定端口（~/.ssh/config 优先，否则 22）。
@@ -94,7 +107,13 @@ echo "→ 目标 ${NAS_USER}@${NAS_HOST}（SSH 端口 ${SSH_PORT:-由 ssh 决定
 echo "  根目录 ${BASE}   对外 ${PORT} → 容器 ${CONTAINER_PORT}（只绑回环）"
 echo "  镜像 ${IMAGE}"
 if [ -n "${VAULT_DIR:-}" ]; then
-  echo "  Obsidian：${VAULT_DIR}/${VAULT_FILE} → /vault（容器内读写，只挂这一层）"
+  echo "  Obsidian：${VAULT_DIR}/${VAULT_FILE}（清单·生成物）"
+  echo "            ${VAULT_DIR}/${VAULT_LEDGER}（账本·真源）"
+  if [ -n "${VAULT_SHOTS}" ]; then
+    echo "            ${VAULT_DIR}/${VAULT_SHOTS}（拍摄记录）→ /vault（容器内读写，只挂这一层）"
+  else
+    echo "            拍摄记录：关掉了（VAULT_SHOTS 为空）→ /vault（容器内读写，只挂这一层）"
+  fi
 else
   echo "  Obsidian：没设 VAULT_DIR，这一块停用"
 fi

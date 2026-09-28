@@ -94,21 +94,29 @@ def verify_password(password, stored):
     return hmac.compare_digest(hash_password(password, salt), stored)
 
 
-# ══════════════ Obsidian 联动：解析 / 合并 / 回写 ══════════════
+# ══════════════ Obsidian 联动：解析 / 重算 / 回写 ══════════════
 #
-# 只碰「## 胶卷列表」那一张表的三列：品牌/型号、格式、数量。
-# 其它列（序号 / 类型 / ISO / 状态 / 购买时间 / 购买价格 / 备注）和
-# 其它几个板块（出售记录 / 拍摄记录 / 库存统计 / 冲扫店）**一个字都不动** ——
-# 那一整份是人手写的账本，回写必须只改一个数字，其余逐字节保留。
+# 两份笔记，各管一件事：
 #
-# 数量用「带基线的增量」合并：
-#   基线 B = 上次同步时的剩余数；Obsidian 现值 O；App 现值 A。
-#   新值 = B + (O - B) + (A - B)
-# 买卷（Obsidian 那头 +2）和装卷（App 这头 -1）都是**加法事件**，
-# 于是两边同时改也**不冲突**，不需要「谁赢」这种规则。
-# 没有基线（首次同步 / 基线丢了）时一律以 Obsidian 为准，并如实标出来。
+#   · 胶卷账本.md   —— **唯一真源**，三节表格：
+#       `## 期初（…）` 冻结快照，余额就是它自己
+#       `## 流水`     只能追加，**只有这一节参与累加**
+#       `## 历史（…）` 改造前的记录，**不参与累加**（理由见下）
+#     于是：库存 = 期初 + Σ流水。
+#   · 胶卷库存清单.md —— **生成物**，三列（品牌/型号 | 格式 | 数量），
+#     每次同步按账本重算后写回。回写仍只替换数量单元格里的数字，其余逐字节保留。
+#
+# 为什么历史段必须排除在求和之外：改造前那些流水 / 旧账都发生在期初**之前**，
+# 已经含在期初里了。再加一遍就会把 99 卷算成 120 卷。**不按日期过滤** ——
+# Hermes 补录旧日期会漏，而且当日边界很容易写错；按节排除是确定性的。
+#
+# App 侧的扣减（装卷）也会变成流水行：同步时拿 data.json 的数量和基线比，
+# 变少就追加一条「消耗」，变多就追加一条「盘点修正」。
 
-OBSIDIAN_SECTION = "胶卷列表"
+OBSIDIAN_SECTION       = "胶卷列表"   # 生成物里的那一节
+OBSIDIAN_LEDGER_BEGIN  = "期初"       # 账本：冻结快照
+OBSIDIAN_LEDGER_FLOW   = "流水"       # 账本：唯一参与累加的一节
+OBSIDIAN_LEDGER_HISTORY = "历史"      # 账本：改造前的记录，只存档
 FORMATS = ("135", "120", "110", "大画幅")
 
 # 表头别名。比前端的 IMPORT_COLS 窄：这里**故意不收「类型」** ——
@@ -118,6 +126,34 @@ OBS_COLS = {
     "stock":  ("品牌/型号", "品牌型号", "型号", "胶卷型号", "型号名称", "胶卷", "名称", "品名", "film", "stock"),
     "count":  ("数量", "卷数", "剩余", "剩余卷数", "存量", "库存", "qty", "count", "rolls"),
     "format": ("格式", "画幅", "规格", "幅面", "size", "format"),
+}
+
+# 流水表的表头别名。**故意不把「库存」「剩余」收进 qty** ——
+# 那一列是「本次变动量」（带符号），不是余额，混进来会把 -1 当成余量。
+# 备注列必须认出来：film-tap 自己追加的行靠 AUTO_TAG 认，见 is_auto_row()。
+LEDGER_COLS = {
+    "date":   ("日期", "时间", "date"),
+    "type":   ("类型", "类别", "type", "kind"),
+    "stock":  OBS_COLS["stock"],
+    "format": OBS_COLS["format"],
+    "qty":    ("数量", "卷数", "增减", "变动", "qty", "delta"),
+    "note":   ("备注", "说明", "注", "note", "remark", "memo"),
+}
+
+# film-tap 自动追加的流水行，备注都以这个开头。它必须能和人手写的行分开 ——
+# 「账本这一侧自己变了多少」正是靠这个算出来的（见 compute_stock 的 u / m）。
+AUTO_TAG = "[自动]"
+
+# 拍摄记录：每次「拍完换卷」追一行。它不参与任何累加，只是一份日志，
+# 所以去重靠「自然键 + 表里已有内容」两条（见 shots_from_cameras）。
+OBSIDIAN_SHOTS_SECTION = "拍摄记录"
+SHOT_COLS = {
+    "camera":   ("相机", "机身", "camera"),
+    "stock":    ("胶卷型号", "品牌/型号", "型号", "film", "stock"),
+    "loaded":   ("装卷日", "装卷日期", "上卷日", "loaded"),
+    "unloaded": ("退卷日", "退卷日期", "卸卷日", "拍完日", "unloaded"),
+    "frames":   ("张数", "拍摄张数", "标称张数", "frames"),
+    "note":     ("备注", "说明", "note"),
 }
 
 _FORMAT_PROBES = (
@@ -165,17 +201,18 @@ def _norm_head(s):
     return re.sub(r"[:：*]", "", t)
 
 
-def map_columns(headers):
-    """识别表头 → {stock:1, count:5, format:4}。
+def map_columns(headers, cols=None):
+    """识别表头 → {stock:1, count:5, format:4}（列定义由 cols 给，默认库存表那套）。
     必须整表精确匹配一遍、再整表包含匹配一遍 —— 合成一趟的话，
     「品牌/型号」会被先命中的「型号」抢走。与前端 mapImport 同一套两趟法。"""
+    cols = cols or OBS_COLS
     norms = [_norm_head(h) for h in headers]
     out = {}
     for loose in (False, True):
         for i, n in enumerate(norms):
             if not n:
                 continue
-            for key, aliases in OBS_COLS.items():
+            for key, aliases in cols.items():
                 if key in out:
                     continue
                 for a in aliases:
@@ -206,28 +243,29 @@ def _is_sep_row(texts):
     return bool(texts) and all(t.strip() and set(t.strip()) <= {"-", ":"} for t in texts)
 
 
-def parse_film_table(text):
-    """解析「## 胶卷列表」里的那张表。
-    → {ok, reason?, lines, rows, skipped}；rows 里带上回写要用的行号与单元格偏移。"""
-    lines = text.splitlines(True)
-    if not lines:
-        return {"ok": False, "reason": "文件是空的"}
-
-    head = re.compile(r"^##\s+" + re.escape(OBSIDIAN_SECTION) + r"\s*$")
+def _section_range(lines, title):
+    """定位「## <title>…」到下一个「## 」之间的 [start, end) 行区间；找不到返回 None。
+    允许标题带后缀（如「## 期初（2026-09-28）」），所以是前缀匹配而不是全等 ——
+    但前缀是锚在 `## ` 之后的，所以「## 历史（…已计入期初…）」不会被当成「期初」那一节。"""
+    head = re.compile(r"^##\s+" + re.escape(title))
     start = None
     for i, ln in enumerate(lines):
         if head.match(ln.rstrip("\r\n").strip()):
             start = i + 1
             break
     if start is None:
-        return {"ok": False, "reason": "没找到「## %s」这一节" % OBSIDIAN_SECTION}
-
+        return None
     end = len(lines)
     for j in range(start, len(lines)):
         if re.match(r"^##\s+", lines[j].rstrip("\r\n").strip()):
             end = j
             break
+    return (start, end)
 
+
+def _table_line_indexes(lines, start, end):
+    """在 [start,end) 里找第一张**连续**的 markdown 表 → (表头行号, [各行行号])。
+    连表头都找不到就是 (None, [])。"""
     hdr = None
     for j in range(start, end):
         s = lines[j].rstrip("\r\n").strip()
@@ -235,14 +273,23 @@ def parse_film_table(text):
             hdr = j
             break
     if hdr is None:
-        return {"ok": False, "reason": "「%s」这一节里没有表格" % OBSIDIAN_SECTION}
-
-    table = []
+        return None, []
+    out = []
     for j in range(hdr, end):
         if lines[j].rstrip("\r\n").strip().startswith("|"):
-            table.append(j)
+            out.append(j)
         else:
             break
+    return hdr, out
+
+
+def parse_stock_table(lines, start, end):
+    """解析「品牌/型号 | 格式 | 数量」这张三列表 —— 「## 胶卷列表」（生成物）和
+    账本的「## 期初」是同一个形状，共用这一份。
+    → {ok, reason?, rows, skipped}；rows 带上重算时判断用不上的行号与回写用的单元格偏移。"""
+    hdr, table = _table_line_indexes(lines, start, end)
+    if hdr is None:
+        return {"ok": False, "reason": "这一节里没有表格"}
 
     header_cells = [c[2].strip() for c in iter_cells(lines[hdr].rstrip("\r\n"))]
     colmap = map_columns(header_cells)
@@ -259,7 +306,7 @@ def parse_film_table(text):
         texts = [c[2] for c in cells]
         if _is_sep_row(texts):
             continue
-        # 修「|| 7 |」这种多出来的空首格 —— 真实文件里就有两行是这样。
+        # 修「|| 7 |」这种多出来的空首格 —— 真实文件里有过两行是这样。
         while len(cells) > len(header_cells) and cells[0][2].strip() == "":
             cells.pop(0)
         if len(cells) != len(header_cells):
@@ -286,10 +333,389 @@ def parse_film_table(text):
             "cell": cells[colmap["count"]][:2],
         })
 
-    if not rows:
-        return {"ok": False, "reason": "「%s」的表里一行数据都没解析出来" % OBSIDIAN_SECTION}
+    return {"ok": True, "rows": rows, "skipped": skipped}
 
-    return {"ok": True, "lines": lines, "rows": rows, "skipped": skipped}
+
+def parse_film_table(text):
+    """解析「## 胶卷列表」里的那张表（生成物）。
+    → {ok, reason?, lines, rows, skipped}；rows 里带上回写要用的行号与单元格偏移。"""
+    lines = text.splitlines(True)
+    if not lines:
+        return {"ok": False, "reason": "文件是空的"}
+    rng = _section_range(lines, OBSIDIAN_SECTION)
+    if rng is None:
+        return {"ok": False, "reason": "没找到「## %s」这一节" % OBSIDIAN_SECTION}
+    got = parse_stock_table(lines, rng[0], rng[1])
+    if not got["ok"]:
+        return {"ok": False, "reason": "「%s」%s" % (OBSIDIAN_SECTION, got["reason"])}
+    if not got["rows"]:
+        return {"ok": False, "reason": "「%s」的表里一行数据都没解析出来" % OBSIDIAN_SECTION}
+    return {"ok": True, "lines": lines, "rows": got["rows"], "skipped": got["skipped"]}
+
+
+def parse_signed_count(value):
+    """流水里的「变动量」→ 带符号整数。`+2` / `-1` / `2` / 全角 `－1` 都认。
+    空、`—` 这类占位返回 None —— 账本历史段里「当时没记数量」就是这么写的，
+    那不是错误，所以也不算 skipped。"""
+    s = str(value if value is not None else "").strip()
+    s = s.replace("－", "-").replace("−", "-").replace("＋", "+")
+    if not s or set(s) <= set("-+—–·. "):
+        return None
+    m = re.search(r"[+-]?\d+", s)
+    return int(m.group()) if m else None
+
+
+def parse_flow_table(lines, start, end):
+    """解析账本里的流水表（日期 | 类型 | 品牌/型号 | 格式 | 数量 | 单价 | 金额 | 备注）。
+    「## 流水」和「## 历史」形状相同、共用这一份 —— 但**求和时只取流水那一节**。
+    → {ok, reason?, rows, skipped, header, last}；last 是表内最后一个行号，追加就插它后面。"""
+    hdr, table = _table_line_indexes(lines, start, end)
+    if hdr is None:
+        return {"ok": False, "reason": "这一节里没有表格"}
+
+    header_cells = [c[2].strip() for c in iter_cells(lines[hdr].rstrip("\r\n"))]
+    colmap = map_columns(header_cells, LEDGER_COLS)
+    missing = [k for k in ("stock", "qty") if k not in colmap]
+    if missing:
+        return {"ok": False,
+                "reason": "表头里认不出「%s」列（表头是：%s）"
+                          % ("、".join(LEDGER_COLS[k][0] for k in missing), " / ".join(header_cells))}
+
+    rows, skipped = [], []
+    last = hdr
+    for j in table[1:]:
+        last = j
+        body = lines[j].rstrip("\r\n")
+        cells = iter_cells(body)
+        texts = [c[2] for c in cells]
+        if _is_sep_row(texts):
+            continue
+        while len(cells) > len(header_cells) and cells[0][2].strip() == "":
+            cells.pop(0)
+        if len(cells) != len(header_cells):
+            skipped.append({"line": j + 1, "reason": "有 %d 格，表头是 %d 格"
+                                                  % (len(cells), len(header_cells))})
+            continue
+        stock = cells[colmap["stock"]][2].strip()
+        if not stock:
+            skipped.append({"line": j + 1, "reason": "这一行没有型号"})
+            continue
+        qty_raw = cells[colmap["qty"]][2]
+        rows.append({
+            "line": j + 1,
+            "line_index": j,
+            "date": cells[colmap["date"]][2].strip() if "date" in colmap else "",
+            "type": cells[colmap["type"]][2].strip() if "type" in colmap else "",
+            "stock": stock,
+            "format": norm_format(cells[colmap["format"]][2] if "format" in colmap else "", stock),
+            "qty": parse_signed_count(qty_raw),
+            "raw_qty": qty_raw.strip(),
+            "note": cells[colmap["note"]][2].strip() if "note" in colmap else "",
+        })
+        # 数量读不出**不算 skipped**：历史段里「当时没记数量」就是这么留的，那是合法的。
+        # 但流水段里出现这种行会让余额对不上，所以由调用方单独提出来（见 obsidian_sync）。
+
+    return {"ok": True, "rows": rows, "skipped": skipped, "header": hdr, "last": last}
+
+
+def parse_ledger(text):
+    """解析胶卷账本。
+    → {ok, reason?, lines, begin_range, flow_range, begin_rows, begin_skipped,
+       flow_rows, flow_skipped, flow_last, history_rows, history_skipped}
+    「## 期初」和「## 流水」缺一节就不 ok；「## 历史」可有可无（它只存档）。"""
+    lines = text.splitlines(True)
+    if not lines:
+        return {"ok": False, "reason": "文件是空的"}
+
+    begin_rng = _section_range(lines, OBSIDIAN_LEDGER_BEGIN)
+    if begin_rng is None:
+        return {"ok": False, "reason": "账本里没找到「## %s」这一节" % OBSIDIAN_LEDGER_BEGIN}
+    flow_rng = _section_range(lines, OBSIDIAN_LEDGER_FLOW)
+    if flow_rng is None:
+        return {"ok": False, "reason": "账本里没找到「## %s」这一节" % OBSIDIAN_LEDGER_FLOW}
+
+    begin = parse_stock_table(lines, begin_rng[0], begin_rng[1])
+    if not begin["ok"]:
+        return {"ok": False, "reason": "「%s」%s" % (OBSIDIAN_LEDGER_BEGIN, begin["reason"])}
+    if not begin["rows"]:
+        return {"ok": False, "reason": "「%s」的表里一行数据都没解析出来" % OBSIDIAN_LEDGER_BEGIN}
+
+    # 流水表刚改造完是空的（只有表头 + 分隔行），那是正常的；但表头必须在，
+    # 否则往哪儿追加、按什么列读都无从谈起。
+    flow = parse_flow_table(lines, flow_rng[0], flow_rng[1])
+    if not flow["ok"]:
+        return {"ok": False, "reason": "「%s」%s" % (OBSIDIAN_LEDGER_FLOW, flow["reason"])}
+
+    hist_rng = _section_range(lines, OBSIDIAN_LEDGER_HISTORY)
+    history = {"rows": [], "skipped": []}
+    if hist_rng is not None:
+        h = parse_flow_table(lines, hist_rng[0], hist_rng[1])
+        if h["ok"]:
+            history = h
+
+    return {"ok": True, "lines": lines,
+            "begin_range": begin_rng, "flow_range": flow_rng,
+            "begin_rows": begin["rows"], "begin_skipped": begin["skipped"],
+            "flow_rows": flow["rows"], "flow_skipped": flow["skipped"],
+            "flow_last": flow["last"],
+            "history_rows": history["rows"], "history_skipped": history["skipped"]}
+
+
+def parse_shots_table(text):
+    """解析拍摄记录笔记（`## 拍摄记录` 那张表）。
+    → {ok, reason?, lines, rows, fingerprints, header, last, colmap, ncols}
+    - `fingerprints` 是每一行「内容指纹」的集合，用来去重（表里已经有同样的事就不再追）。
+      **指纹里不含机身名** —— 改过名的机身不该被当成一桩新事件再写一遍。
+    - `colmap` / `ncols` 给拼新行用：**按表头位置摆**，所以表头少一两列也照样能写。
+    必需列只有「胶卷型号」和「退卷日」—— 没有它们就认不出是哪一卷、什么时候退的。"""
+    lines = text.splitlines(True)
+    if not lines:
+        return {"ok": False, "reason": "文件是空的"}
+    rng = _section_range(lines, OBSIDIAN_SHOTS_SECTION)
+    if rng is None:
+        return {"ok": False, "reason": "没找到「## %s」这一节" % OBSIDIAN_SHOTS_SECTION}
+    hdr, table = _table_line_indexes(lines, rng[0], rng[1])
+    if hdr is None:
+        return {"ok": False, "reason": "「%s」这一节里没有表格" % OBSIDIAN_SHOTS_SECTION}
+
+    header_cells = [c[2].strip() for c in iter_cells(lines[hdr].rstrip("\r\n"))]
+    colmap = map_columns(header_cells, SHOT_COLS)
+    missing = [k for k in ("stock", "unloaded") if k not in colmap]
+    if missing:
+        return {"ok": False,
+                "reason": "「%s」表头里认不出「%s」列（表头是：%s）"
+                          % (OBSIDIAN_SHOTS_SECTION,
+                             "、".join(SHOT_COLS[k][0] for k in missing),
+                             " / ".join(header_cells))}
+
+    cam_col = colmap.get("camera")
+    rows, fps, last = [], set(), hdr
+    for j in table[1:]:
+        last = j
+        body = lines[j].rstrip("\r\n")
+        texts = [c[2].strip() for c in iter_cells(body)]
+        if _is_sep_row(texts):
+            continue
+        while len(texts) > len(header_cells) and texts[0] == "":
+            texts.pop(0)
+        while len(texts) < len(header_cells):
+            texts.append("")
+        if not any(texts):
+            continue                    # 全空的占位行：不算数据，也不算错
+        rows.append({"line": j + 1, "line_index": j, "cells": texts})
+        fps.add(shot_fingerprint(texts, cam_col))
+
+    return {"ok": True, "lines": lines, "rows": rows, "fingerprints": fps,
+            "header": hdr, "last": last, "colmap": colmap, "ncols": len(header_cells)}
+
+
+def shot_fingerprint(cells, cam_col):
+    """一行的内容指纹：把机身名那一格抹掉再比 —— 改名不该算成一桩新事件。
+    其余各格（型号、两个日期、张数、备注）有一格不同就算另一桩事。"""
+    fp = list(cells)
+    if isinstance(cam_col, int) and 0 <= cam_col < len(fp):
+        fp[cam_col] = ""
+    return tuple(fp)
+
+
+def is_auto_row(row):
+    """这一行是 film-tap 自己追加的吗？靠备注开头的标记认。
+    自动行必须能和「人写的行」分开：账本这一侧自己变了多少，正是靠这个算出来的。"""
+    return str(row.get("note") or "").strip().startswith(AUTO_TAG)
+
+
+def compute_stock(begin_rows, flow_rows):
+    """库存 = 期初 + Σ流水。
+    → ([{key, stock, format, count, u, m}], [warning])，顺序 = 期初顺序 + 账本里新出现的款。
+
+    count = u + m，拆开记是因为「要不要追加流水」算的是账本**人侧**的净变化：
+      u = 期初 + **人写的**流水（购入 / 售出 / 消耗 / 盘点修正）
+      m = film-tap **自动追加的**流水（装卷扣减、App 侧手改库存）
+
+    负数**只告警、不钳** —— 钳了等式就不自洽了（「对不上账」这件事必须说出来）；
+    真正钳到 0 只发生在写给清单和 App 的那一步。"""
+    out, order = {}, []
+
+    def slot(stock, fmt):
+        k = film_key(stock, fmt)
+        if k not in out:
+            out[k] = {"key": k, "stock": stock, "format": fmt,
+                      "count": 0, "u": 0, "m": 0}
+            order.append(k)
+        return out[k]
+
+    for r in begin_rows:
+        s = slot(r["stock"], r["format"])
+        s["count"] += int(r["count"])
+        s["u"] += int(r["count"])
+
+    for r in flow_rows:
+        if r.get("qty") is None:
+            continue
+        s = slot(r["stock"], r["format"])
+        s["count"] += int(r["qty"])
+        if is_auto_row(r):
+            s["m"] += int(r["qty"])
+        else:
+            s["u"] += int(r["qty"])
+
+    warnings = []
+    for k in order:
+        if out[k]["count"] < 0:
+            warnings.append("%s：账本累加后是 %d 卷，库存按 0 显示 —— "
+                            "多半是漏记了购入，或者同一卷被扣了两次"
+                            % (out[k]["stock"], out[k]["count"]))
+    return [out[k] for k in order], warnings
+
+
+def loaded_dates(cameras):
+    """机身里当前装着的那卷 → {film_key: 装卷日期}。
+
+    装卷那一瞬间就是库存 -1 的时刻，拿它的 loadedAt 当流水日期，比「同步当天」准。
+    多台机身撞同一款时取最新那个日期。"""
+    out = {}
+    for c in (cameras or {}).values():
+        if not isinstance(c, dict):
+            continue
+        r = c.get("loaded")
+        if not isinstance(r, dict):
+            continue
+        stock = str(r.get("stock") or "").strip()
+        if not stock:
+            continue
+        k = film_key(stock, norm_format(c.get("format"), stock))
+        d = str(r.get("loadedAt") or "")
+        if d and d > out.get(k, ""):
+            out[k] = d
+    return out
+
+
+def shot_rows_from_cameras(cameras):
+    """机身 history 里「已经退过卷」的那些卷 → 拍摄记录要用的字段（还没去重）。
+
+    「已经退卷」= history 里有 `unloadedAt` 的条目。装新卷顶掉旧卷、以及
+    「标记为空机」，在 App 里都是把当前那卷推进 history，所以两种都算「拍完换卷」。
+
+    `key` 是稳定自然键（机身 id + 型号 + 装卷日 + 退卷日）—— 用 id 而不是机身名，
+    改过名的机身不会因为名字变了就把老记录再写一遍。
+    → 按退卷日排序的列表；`fields` 里的键和 SHOT_COLS 对齐。"""
+    out = []
+    for cid, c in (cameras or {}).items():
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip() or str(cid)
+        hist = c.get("history")
+        if not isinstance(hist, list):
+            continue
+        for r in hist:
+            if not isinstance(r, dict):
+                continue
+            stock = str(r.get("stock") or "").strip()
+            unloaded = str(r.get("unloadedAt") or "").strip()
+            if not stock or not unloaded:
+                continue            # 没型号 / 没退卷日：认不出是哪一卷，不写
+            loaded = str(r.get("loadedAt") or "").strip()
+            frames = r.get("total")
+            frames = str(int(frames)) if isinstance(frames, (int, float)) and frames else ""
+            note = str(r.get("note") or "").strip()
+            ei, iso = r.get("ei"), r.get("iso")
+            if ei and iso and ei != iso:
+                tip = "按 EI %s 拍" % ei
+                note = (note + "；" + tip) if note else tip
+            out.append({
+                "key": "|".join([str(cid), stock, loaded, unloaded]),
+                "fields": {"camera": name, "stock": stock, "loaded": loaded,
+                           "unloaded": unloaded, "frames": frames, "note": note},
+            })
+    out.sort(key=lambda x: (x["fields"]["unloaded"], x["fields"]["loaded"],
+                            x["fields"]["camera"], x["fields"]["stock"]))
+    return out
+
+
+def shot_cells(fields, colmap, ncols):
+    """把字段按**表头的位置**摆成一行。表头少几列也照写（缺的列就空着）。"""
+    cells = [""] * ncols
+    for name, col in colmap.items():
+        if 0 <= col < ncols:
+            cells[col] = str(fields.get(name) or "")
+    return cells
+
+
+def plan_app_flows(films, baseline, ledger_rows, dates=None, today=""):
+    """App 侧的变动 → 要往账本追加的流水行，以及重算后的库存。
+
+    ledger_rows = compute_stock() 的结果；baseline = {key: 上次同步时该款的 u}。
+
+    对每一款推一遍：
+
+        F = A + (U - Ubase)
+        A     = App 现值
+        U     = 账本「人侧」存量（期初 + 人写的流水）
+        Ubase = 基线里记的人侧存量
+
+    也就是「App 现值 + 账本这一侧自上次约定以来的净变化」—— 买卷（+）和装卷（-）
+    都是加法事件，两边各自动过一次也能叠加，不需要「谁赢」这种规则。
+    要追加的量 = `F - L`，L 是账本现值（U + M，含我们以前自动追加过的）。
+
+    这条式子是**幂等的**：追加完 L 就等于 F，重放一次算出来就是 0 ——
+    所以哪怕「基线还没来得及写」就崩了，也不会重复扣减。
+    基线缺失时取 Ubase = A - M，等价于「假设上次两边一致」：于是 F = L，一行都不追加，
+    以账本为准。
+
+    → (planned, appended)；planned 是重算后的库存（顺序即写入清单的顺序），
+      appended 是要追加的流水行。负数只告警不钳，钳只发生在写出去那一步。"""
+    dates = dates or {}
+    planned, appended = [], []
+    index = {r["key"]: r for r in ledger_rows}
+
+    for L in ledger_rows:                       # 顺序即期初顺序，写入清单时照抄
+        key = L["key"]
+        cur = films.get(key)
+        has = isinstance(cur, dict)
+        was = int(cur.get("count") or 0) if has else None
+        A = max(0, int(cur.get("count") or 0)) if has else 0
+
+        Ubase = baseline.get(key)
+        if not isinstance(Ubase, int):
+            Ubase = A - L["m"]          # 没基线 → 假设上次两边一致，以账本为准
+
+        F = A + (L["u"] - Ubase)
+        q = F - L["count"]
+        if q:
+            appended.append({
+                "key": key, "stock": L["stock"], "format": L["format"], "qty": q,
+                "type": "消耗" if q < 0 else "盘点修正",
+                "date": dates.get(key) or today,
+                "note": (AUTO_TAG + " 装卷从库存里拿走") if q < 0
+                        else (AUTO_TAG + " 在 App 里改了库存"),
+            })
+        planned.append({"key": key, "stock": L["stock"], "format": L["format"],
+                        "count": max(0, F), "raw": F, "was": was})
+
+    # 账本里根本没有、但 App 里有的款：只能补一条盘点修正把它记进去，
+    # 否则「库存 = 期初 + Σ流水」就解释不了它。
+    for key in sorted(films):
+        if key in index:
+            continue
+        rec = films[key] if isinstance(films.get(key), dict) else {}
+        stock = str(rec.get("stock") or "").strip()
+        A = max(0, int(rec.get("count") or 0))
+        if not stock or not A:
+            continue
+        fmt = norm_format(rec.get("format"), stock)
+        appended.append({"key": key, "stock": stock, "format": fmt, "qty": A,
+                         "type": "盘点修正", "date": today,
+                         "note": AUTO_TAG + " App 里有、账本里没有，先记一笔"})
+        planned.append({"key": key, "stock": stock, "format": fmt,
+                        "count": A, "raw": A, "was": A})
+
+    warnings = []
+    for p in planned:
+        if p["raw"] < 0:
+            warnings.append("%s：重算后是 %d 卷，库存按 0 显示 —— "
+                            "多半是漏记了购入，或者同一卷被扣了两次"
+                            % (p["stock"], p["raw"]))
+    return planned, appended, warnings
 
 
 def apply_counts(lines, updates):
@@ -306,43 +732,33 @@ def apply_counts(lines, updates):
     return out
 
 
-def merge_films(rows, films, baseline):
-    """带基线的增量合并 → (changes, unmatched, warnings)。
+def rebuild_stock_table(lines, start, end, rows):
+    """把「## 胶卷列表」的表行整段重建 —— 只在**款式集合变了**（账本里冒出新款）时才走这条
+    路；集合没变一律走 apply_counts，改动面更小。表头与分隔行原样保留，节外逐字节不动。
+    rows = [{stock, format, count}]，顺序即输出顺序。返回 None 表示这一段结构不正常。"""
+    hdr, table = _table_line_indexes(lines, start, end)
+    if hdr is None:
+        return None
+    keep = 1
+    if len(table) > 1 and _is_sep_row([c[2] for c in iter_cells(lines[table[1]].rstrip("\r\n"))]):
+        keep = 2
+    if len(table) < keep:
+        return None
+    insert_at = hdr + keep
+    tail_at = table[-1] + 1
+    nl = "\r\n" if lines[hdr].endswith("\r\n") else "\n"
+    fresh = ["| %s | %s | %d |%s" % (r["stock"], r["format"], r["count"], nl) for r in rows]
+    return lines[:insert_at] + fresh + lines[tail_at:]
 
-    同一款（型号@画幅）两边都改过也不冲突：买卷是 +、装卷是 -，加在一起就是净变化。
-    没有基线时以 Obsidian 为准，并把 basis 标成 "obsidian"，让调用方如实告诉用户。
-    """
-    changes, warnings = [], []
-    seen = set()
-    for r in rows:
-        key = film_key(r["stock"], r["format"])
-        seen.add(key)
-        prev = films.get(key)
-        old = int(prev.get("count") or 0) if isinstance(prev, dict) else None
-        obs = int(r["count"])
 
-        B = baseline.get(key)
-        if isinstance(B, int) and old is not None:
-            new = B + (obs - B) + (old - B)      # = old + (obs - B)
-            basis = "merge"
-        else:
-            new = obs
-            basis = "obsidian"
-
-        overflow = 0
-        if new < 0:
-            overflow, new = -new, 0
-            warnings.append("%s：合并后是负数，按 0 计（多扣了 %d 卷）" % (r["stock"], overflow))
-
-        changes.append({
-            "key": key, "stock": r["stock"], "format": r["format"],
-            "old": old, "obs": obs, "new": new, "basis": basis, "overflow": overflow,
-            "action": "new" if old is None else ("change" if old != new else "same"),
-            "line": r["line"], "line_index": r["line_index"], "cell": r["cell"],
-        })
-
-    unmatched = sorted(k for k in films if k not in seen)
-    return changes, unmatched, warnings
+def append_flow_rows(lines, last, rows):
+    """在流水表最后一行（行号 last）后面插入若干流水行。
+    rows = [[日期, 类型, 品牌/型号, 格式, 数量, 单价, 金额, 备注]]，逐格按字符串写。"""
+    if not rows:
+        return lines
+    nl = "\r\n" if lines[last].endswith("\r\n") else "\n"
+    fresh = ["| " + " | ".join(str(c) for c in r) + " |" + nl for r in rows]
+    return lines[:last + 1] + fresh + lines[last + 1:]
 
 
 class Store:
@@ -543,9 +959,20 @@ class Store:
 
     # ── Obsidian 联动 ──
     def obsidian_path(self):
-        """vault 里的那个文件路径。从环境变量来 —— **绝不能硬编码进仓库**：
+        """生成物（胶卷库存清单.md）的路径。从环境变量来 —— **绝不能硬编码进仓库**：
         这个仓库是公开的，路径本身就在讲谁的 NAS 怎么摆的。"""
         return (os.environ.get("FT_OBSIDIAN") or "").strip()
+
+    def obsidian_ledger_path(self):
+        """账本（胶卷账本.md）的路径 —— 唯一真源。同样只从环境变量来。
+        两个都设齐联动才启用：只有账本没清单就没地方写生成物，只有清单没账本就无从重算。"""
+        return (os.environ.get("FT_OBSIDIAN_LEDGER") or "").strip()
+
+    def obsidian_shots_path(self):
+        """拍摄记录（胶卷拍摄记录.md）的路径。**这个是可选的** ——
+        没设就跳过这一块，其余同步照常；设了但读不懂才会报错。
+        不设它整块停用，是为了让老部署升级上来的时候不至于因为少一个变量就全废。"""
+        return (os.environ.get("FT_OBSIDIAN_SHOTS") or "").strip()
 
     def read_baseline(self):
         b = self._read_json(self.p(OBSIDIAN_BASELINE), {}) or {}
@@ -597,28 +1024,63 @@ class Store:
                 pass
         return dst
 
-    def obsidian_sync(self, dry=False):
-        """读 vault → 合并 →（非 dry 时）写 data.json + 回写 md + 更新基线。
+    def obsidian_sync(self, dry=False, today=""):
+        """读账本 → 重算库存 → 追加 App 侧变动的流水 →（非 dry 时）写 data.json
+        + 回写清单 + 追加流水到账本 + 推基线。
+
+        写入顺序刻意是「data.json → 清单 → 账本 → 基线」：基线只有在前面都成了之后，
+        才代表「已经同步到的状态」。中间任何一步失败都**不推进基线**，而追加量是
+        `F - L` 这种幂等的式子 —— 重放一次算出来是 0，不会重复扣减。
 
         返回 (状态, 详情)。状态：
           not_configured / no_file / parse_failed / blocked / write_failed /
-          partial（App 写成了但回写 vault 失败）/ ok
+          partial（App 写成了但回写笔记失败）/ ok
         """
         path = self.obsidian_path()
-        if not path:
+        ledger = self.obsidian_ledger_path()
+        if not path or not ledger:
             return "not_configured", {}
-        if not os.path.isfile(path):
-            return "no_file", {"path": path}
+        for target, which in ((ledger, "ledger"), (path, "list")):
+            if not os.path.isfile(target):
+                return "no_file", {"path": target, "which": which}
 
         with self.lock:
             try:
-                with open(path, "rb") as f:
-                    raw = f.read()
+                with open(ledger, "rb") as f:
+                    led_raw = f.read()
             except OSError:
-                return "no_file", {"path": path}
-            parsed = parse_film_table(raw.decode("utf-8", "replace"))
-            if not parsed["ok"]:
-                return "parse_failed", {"path": path, "reason": parsed["reason"]}
+                return "no_file", {"path": ledger, "which": "ledger"}
+            led = parse_ledger(led_raw.decode("utf-8", "replace"))
+            if not led["ok"]:
+                return "parse_failed", {"path": ledger, "which": "ledger",
+                                        "reason": led["reason"]}
+
+            try:
+                with open(path, "rb") as f:
+                    list_raw = f.read()
+            except OSError:
+                return "no_file", {"path": path, "which": "list"}
+            lst = parse_film_table(list_raw.decode("utf-8", "replace"))
+            if not lst["ok"]:
+                return "parse_failed", {"path": path, "which": "list",
+                                        "reason": lst["reason"]}
+
+            # 拍摄记录是**可选**的一块：没设 FT_OBSIDIAN_SHOTS 就跳过。
+            # 设了就得能读 —— 读不到宁可报出来，也别让「退了卷却没记录」静悄悄发生。
+            shots_path = self.obsidian_shots_path()
+            shots = None
+            if shots_path:
+                if not os.path.isfile(shots_path):
+                    return "no_file", {"path": shots_path, "which": "shots"}
+                try:
+                    with open(shots_path, "rb") as f:
+                        shots_raw = f.read()
+                except OSError:
+                    return "no_file", {"path": shots_path, "which": "shots"}
+                shots = parse_shots_table(shots_raw.decode("utf-8", "replace"))
+                if not shots["ok"]:
+                    return "parse_failed", {"path": shots_path, "which": "shots",
+                                            "reason": shots["reason"]}
 
             cur_raw, _ = self.read_data()
             db = {}
@@ -632,36 +1094,101 @@ class Store:
             films = db.get("films") if isinstance(db.get("films"), dict) else {}
             cameras = db.get("cameras") if isinstance(db.get("cameras"), dict) else {}
 
+            # 基线记的是「上次同步时每一款的 u（账本的人侧存量）」。换了文件就作废；
+            # 老基线（还没有 ubase 字段的那版）**故意继续沿用** —— 升级那一下漏掉 App
+            # 侧的扣减比什么都糟，而旧的 counts 字段正好也能当 u 用（当时没有自动行）。
             base = self.read_baseline()
-            if base.get("file") != path:            # 换了文件，旧基线作废
+            if base.get("file") != path:
                 base = {}
-            baseline = base.get("counts") if isinstance(base.get("counts"), dict) else {}
-            prev_rows = base.get("rows")
+            elif base.get("ledger") and base["ledger"] != ledger:
+                base = {}
+            ubase = base.get("ubase")
+            if not isinstance(ubase, dict):
+                ubase = base.get("counts") if isinstance(base.get("counts"), dict) else {}
 
-            # 护栏：行数骤减说明文件多半被写坏了。宁可拒绝，也不要把库存清零。
+            begin_text = "".join(led["lines"][led["begin_range"][0]:led["begin_range"][1]])
+            begin_hash = sha16(begin_text.encode("utf-8"))
+
+            # 护栏。两条都只拒绝、不动任何数据。
             blocked = None
-            if isinstance(prev_rows, int) and prev_rows > 0 and len(parsed["rows"]) < prev_rows * 0.5:
-                blocked = ("解析出的行数从 %d 掉到了 %d，看着像文件被写坏了 —— "
-                           "这次没动任何数据" % (prev_rows, len(parsed["rows"])))
+            prev_flow = base.get("flowRows")
+            if (isinstance(prev_flow, int) and prev_flow > 0
+                    and len(led["flow_rows"]) < prev_flow * 0.5):
+                blocked = ("账本「## 流水」的行数从 %d 掉到了 %d，看着像被写坏了 —— "
+                           "这次没动任何数据" % (prev_flow, len(led["flow_rows"])))
+            if blocked is None and base.get("beginHash") and base["beginHash"] != begin_hash:
+                blocked = ("账本「## 期初」被改过了（它是冻结快照，本就不该动）—— "
+                           "这次没动任何数据。真要改库存，请往「## 流水」追加一条「盘点修正」。")
 
-            changes, unmatched, warnings = merge_films(parsed["rows"], films, baseline)
-            # 要展示 / 要处理的，是这两类里的一种：
-            #   · App 侧真变了（action != "same"）
-            #   · App 没变，但笔记那一格和合并结果对不上（action == "same" 且 new != obs）
-            # 第二类是**最常见**的一类：App 里装了/拍了一卷、笔记还没改。
-            # 漏掉它，笔记就永远追不上 App。
-            todo = [c for c in changes
-                    if c["action"] != "same" or c["new"] != c["obs"]]
+            ledger_rows, _ = compute_stock(led["begin_rows"], led["flow_rows"])
+            u_by_key = {r["key"]: r["u"] for r in ledger_rows}
+            planned, appended, warnings = plan_app_flows(
+                films, ubase, ledger_rows,
+                dates=loaded_dates(cameras),
+                today=today or datetime.now().strftime("%Y-%m-%d"))
+
+            # 清单侧要改哪些格子：款式集合没变就只改数字，变了才整段重建。
+            by_key = {p["key"]: p for p in planned}
+            listed = {}
+            for r in lst["rows"]:
+                listed[film_key(r["stock"], r["format"])] = r
+            same_keys = set(by_key) == set(listed)
+            list_writes = []
+            if same_keys:
+                list_writes = [(r["line_index"], r["cell"][0], r["cell"][1], by_key[k]["count"])
+                               for k, r in listed.items() if r["count"] != by_key[k]["count"]]
+
+            # 拍摄记录：把「已经退卷」的卷补进去。去重两条 —— ① 基线里的自然键
+            # （机身 id 参与的，扛得住改名）② 表里已有同样的内容（指纹不含机身名，
+            # 所以基线丢了也不会因为改过名就把老记录重写一遍）。
+            # 两条都在，所以重放一次算出来是空的，不需要额外的幂等技巧。
+            shots_new, shots_dup = [], 0
+            shots_seen = set(base.get("shots") or [])
+            if shots:
+                cam_col = shots["colmap"].get("camera")
+                batch = set()
+                for s in shot_rows_from_cameras(cameras):
+                    cells = shot_cells(s["fields"], shots["colmap"], shots["ncols"])
+                    fp = shot_fingerprint(cells, cam_col)
+                    if s["key"] in shots_seen or fp in shots["fingerprints"] or fp in batch:
+                        shots_dup += 1
+                        continue
+                    batch.add(fp)
+                    shots_new.append({"key": s["key"], "cells": cells,
+                                      "camera": s["fields"]["camera"],
+                                      "stock": s["fields"]["stock"],
+                                      "unloaded": s["fields"]["unloaded"]})
+
+            no_qty = [r for r in led["flow_rows"] if r["qty"] is None]
+            if no_qty:
+                warnings.append("账本「## 流水」里有 %d 行没写数量（第 %s 行），"
+                                "它们没被计入库存"
+                                % (len(no_qty), "、".join(str(r["line"]) for r in no_qty)))
+            if not shots_path:
+                warnings.append("没配拍摄记录笔记（部署时设 FT_OBSIDIAN_SHOTS），"
+                                "「拍完换卷」这一块这次跳过了")
+
             summary = {
                 "path": path,
-                "rows": len(parsed["rows"]),
-                "skipped": parsed["skipped"],
-                "firstSync": not baseline,
-                "changes": [{k: c[k] for k in ("key", "stock", "format", "old", "new", "obs", "action", "basis")}
-                            for c in todo],
-                "unchanged": len(changes) - len(todo),
-                "unmatched": unmatched,
+                "ledger": ledger,
+                "beginRows": len(led["begin_rows"]),
+                "beginTotal": sum(r["count"] for r in led["begin_rows"]),
+                "flowRows": len(led["flow_rows"]),
+                "historyRows": len(led["history_rows"]),
+                "stockTotal": sum(p["count"] for p in planned),
+                "appended": appended,
+                "shots": shots_new,
+                "shotsPath": shots_path,
+                "shotsDup": shots_dup,
+                "recalc": [{"key": p["key"], "stock": p["stock"], "format": p["format"],
+                            "was": p["was"], "now": p["count"]}
+                           for p in planned
+                           if p["was"] != p["count"]
+                           and not (p["was"] is None and p["count"] == 0)],
+                "listWrites": len(list_writes) if same_keys else "rebuild",
+                "skipped": led["begin_skipped"] + led["flow_skipped"] + lst["skipped"],
                 "warnings": warnings,
+                "firstSync": not ubase,
                 "at": base.get("at") or "",
             }
             if dry:
@@ -671,16 +1198,20 @@ class Store:
                 summary["blocked"] = blocked
                 return "blocked", summary
 
-            # ① 先写 data.json —— App 是权威的一份，先让它落地
+            # ① 先写 data.json —— 页面直接读这份，先让它落地
             newfilms = dict(films)
-            for c in changes:
-                rec = dict(newfilms[c["key"]]) if isinstance(newfilms.get(c["key"]), dict) else {}
-                rec["id"] = c["key"]
-                rec["stock"] = c["stock"]
-                rec["format"] = c["format"]
-                rec["count"] = c["new"]
+            for p in planned:
+                if p["was"] is None and p["count"] == 0:
+                    # 账本里有这一款、但已经一卷不剩，App 里又没有它 ——
+                    # 别凭空造一条空记录。清单里照样会列出它（0 卷）。
+                    continue
+                rec = dict(newfilms[p["key"]]) if isinstance(newfilms.get(p["key"]), dict) else {}
+                rec["id"] = p["key"]
+                rec["stock"] = p["stock"]
+                rec["format"] = p["format"]
+                rec["count"] = p["count"]
                 # 其余字段（有效期 / 购入日期 / 单价 / 备注）不动 —— 它们不在同步范围里
-                newfilms[c["key"]] = rec
+                newfilms[p["key"]] = rec
             db["version"] = 2
             db["cameras"] = cameras
             db["films"] = newfilms
@@ -689,33 +1220,75 @@ class Store:
             if state != "ok":
                 return "write_failed", {"path": path, "message": "写 data.json 失败：" + state}
 
-            # ② 回写 vault：哪一格和合并结果对不上就改哪一格，判断只看 new != obs。
-            #    遍历 changes 而不是 todo：App 里拍掉一卷后，「App 值」可能和
-            #    合并结果正好相等（action 仍是 same），可笔记那一格还是旧数字，
-            #    一样得写回去，否则笔记永远追不上。
-            writes = [(c["line_index"], c["cell"][0], c["cell"][1], c["new"])
-                      for c in changes if c["new"] != c["obs"]]
+            # ② 回写清单（生成物）：款式集合没变只改数字格，变了才整段重建
+            new_list = None
+            if not same_keys:
+                rng = _section_range(lst["lines"], OBSIDIAN_SECTION)
+                built = rebuild_stock_table(lst["lines"], rng[0], rng[1], planned) if rng else None
+                if built is None:
+                    summary.update({"rev": info.get("rev"), "vaultError":
+                                    "清单的「## 胶卷列表」结构认不出来，这次没回写它"})
+                    return "partial", summary
+                new_list = "".join(built)
+            elif list_writes:
+                new_list = "".join(apply_counts(lst["lines"], list_writes))
             backup = None
-            if writes:
+            if new_list is not None:
                 backup = self._backup_vault_file(path)
                 try:
-                    self._write_text_atomic(path, "".join(apply_counts(parsed["lines"], writes)))
+                    self._write_text_atomic(path, new_list)
                 except OSError as e:
-                    # App 已更新、Obsidian 没写成功。**故意不更新基线** ——
-                    # 增量是可重放的，下次同步会算出同一个结果，不会重复加减。
-                    summary.update({"written": 0, "backup": backup, "rev": info.get("rev"),
-                                    "vaultError": "回写 Obsidian 失败：%s" % e})
+                    # App 已更新、清单没写成功。**故意不推进基线** ——
+                    # 重放会算出同一个结果，不会重复扣减。
+                    summary.update({"backup": backup, "rev": info.get("rev"),
+                                    "vaultError": "回写清单失败：%s" % e})
                     return "partial", summary
 
-            # ③ 基线最后写：只有前面都成了，它才代表「已经同步到的状态」
+            # ③ 追加流水到账本（唯一真源）。放在清单之后：它记的是「App 侧已经发生的
+            #    变动」；它成了而基线没成也不要紧，重放算出来是 0。
+            if appended:
+                cells = [[a["date"], a["type"], a["stock"], a["format"],
+                          "%+d" % a["qty"], "", "", a["note"]] for a in appended]
+                led_backup = self._backup_vault_file(ledger)
+                try:
+                    self._write_text_atomic(
+                        ledger, "".join(append_flow_rows(led["lines"], led["flow_last"], cells)))
+                except OSError as e:
+                    summary.update({"backup": led_backup, "rev": info.get("rev"),
+                                    "ledgerError": "追加账本流水失败：%s" % e})
+                    return "partial", summary
+                backup = backup or led_backup
+
+            # ④ 拍摄记录：只在表尾追加行。它不参与任何累加，去重也不靠基线，
+            #    所以这一步失败最多是「下次再补」，不会算错数。
+            if shots_new:
+                shots_backup = self._backup_vault_file(shots_path)
+                try:
+                    self._write_text_atomic(shots_path, "".join(append_flow_rows(
+                        shots["lines"], shots["last"], [s["cells"] for s in shots_new])))
+                except OSError as e:
+                    summary.update({"backup": shots_backup, "rev": info.get("rev"),
+                                    "shotsError": "追加拍摄记录失败：%s" % e})
+                    return "partial", summary
+                backup = backup or shots_backup
+                shots_seen |= set(s["key"] for s in shots_new)
+
+            # ⑤ 基线最后写：只有前面都成了，它才代表「已经同步到的状态」
             self.write_baseline({
                 "file": path,
+                "ledger": ledger,
                 "at": now_iso(),
-                "rows": len(parsed["rows"]),
-                "counts": {c["key"]: c["new"] for c in changes},
+                "rows": len(lst["rows"]),
+                "flowRows": len(led["flow_rows"]) + len(appended),
+                "beginHash": begin_hash,
+                "counts": {p["key"]: p["count"] for p in planned},
+                "ubase": {p["key"]: u_by_key[p["key"]]
+                          for p in planned if p["key"] in u_by_key},
+                # 已经写进拍摄记录的那些退卷事件（自然键），扛得住机身改名
+                "shots": sorted(shots_seen),
             })
-            summary.update({"written": len(writes), "backup": backup,
-                            "rev": info.get("rev"), "vaultError": None})
+            summary.update({"backup": backup, "rev": info.get("rev"),
+                            "vaultError": None, "ledgerError": None, "shotsError": None})
             return "ok", summary
 
 
@@ -822,40 +1395,46 @@ class Handler(BaseHTTPRequestHandler):
         """把 (状态, 详情) 拼成给前端的一句话 + 结构化字段。
         中文提示只在这里生成一处，预览和执行两条路共用，措辞不会两边打架。"""
         info = info or {}
-        changes = info.get("changes") or []
-        n_new = sum(1 for c in changes if c.get("action") == "new")
-        n_chg = sum(1 for c in changes if c.get("action") == "change")
-        # App 侧没动、只是笔记那一格落后了 —— 要写回笔记，但不算「App 改动」。
-        n_back = sum(1 for c in changes
-                     if c.get("action") != "new" and c.get("action") != "change")
+        appended = info.get("appended") or []
+        shots = info.get("shots") or []
+        recalc = info.get("recalc") or []
         blocked = info.get("blocked")
+        n_consume = sum(1 for a in appended if (a.get("qty") or 0) < 0)
+        which = {"ledger": "账本", "shots": "拍摄记录"}.get(info.get("which"), "清单")
 
         if state == "not_configured":
-            msg = "这台机器没配 Obsidian 同步（部署时要挂载 vault 并设 FT_OBSIDIAN）"
+            msg = ("这台机器没配 Obsidian 联动（部署时要挂载 vault，"
+                   "并设 FT_OBSIDIAN 与 FT_OBSIDIAN_LEDGER）")
         elif state == "no_file":
-            msg = "找不到那个笔记文件：" + str(info.get("path") or "")
+            msg = "找不到%s文件：%s" % (which, info.get("path") or "")
         elif state == "parse_failed":
-            msg = "读不懂那份笔记：" + str(info.get("reason") or "")
+            msg = "读不懂%s：%s" % (which, info.get("reason") or "")
         elif blocked:
             # 护栏拦下。dry-run 时 state 仍是 ok，所以这里先判 blocked。
             msg = blocked
         elif state == "write_failed":
             msg = str(info.get("message") or "写数据失败")
         elif state == "partial":
-            msg = "库存已更新，但回写笔记失败：" + str(info.get("vaultError") or "")
-        elif not changes:
-            msg = "两边已经一致，没有要改的（对上了 %d 行）" % (info.get("unchanged") or 0)
+            msg = ("库存已更新，但回写笔记失败："
+                   + str(info.get("vaultError") or info.get("ledgerError")
+                         or info.get("shotsError") or ""))
         else:
             bits = []
-            if n_new:
-                bits.append("新增 %d" % n_new)
-            if n_chg:
-                bits.append("改动 %d" % n_chg)
-            if n_back:
-                bits.append("回写笔记 %d" % n_back)
-            msg = "、".join(bits) + "，另外 %d 行没变" % (info.get("unchanged") or 0)
-        if info.get("firstSync") and state == "ok":
-            msg = "首次同步，以 Obsidian 为准 —— " + msg
+            if n_consume:
+                bits.append("App 追加 %d 条消耗流水" % n_consume)
+            elif appended:
+                bits.append("追加 %d 条流水" % len(appended))
+            if shots:
+                bits.append("拍摄记录追加 %d 行" % len(shots))
+            if recalc:
+                bits.append("重算后 %d 款有变化" % len(recalc))
+            if not bits:
+                bits.append("账本与库存已经一致")
+            msg = "、".join(bits) + "（期初 %d 卷，流水 %d 行，库存 %d 卷）" % (
+                info.get("beginTotal") or 0, info.get("flowRows") or 0,
+                info.get("stockTotal") or 0)
+        if info.get("firstSync") and state == "ok" and not blocked:
+            msg = "首次同步，以账本为准 —— " + msg
 
         out = dict(info)
         out.update({"ok": state == "ok" and not blocked, "state": state,
@@ -935,7 +1514,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/obsidian/sync":
             if not self._authed():
                 return self._json(401, {"error": "unauthorized"})
-            state, info = self.store.obsidian_sync(dry=False)
+            # 自动追加的流水行要写日期。容器多半跑在 UTC 上，直接用服务端的「今天」
+            # 会在晚上差一天，所以让页面把它的本地日期带上来。
+            today = ""
+            raw = self._body()
+            if raw:
+                try:
+                    today = str(json.loads(raw.decode("utf-8")).get("today") or "")[:10]
+                except (ValueError, AttributeError, UnicodeDecodeError):
+                    today = ""
+            state, info = self.store.obsidian_sync(dry=False, today=today)
             body = self._obsidian_body(state, info)
             # 只有 ok 是 200；没配好是 400（这台机器不该点这个按钮）；
             # 其余（没文件 / 解析失败 / 护栏拦下 / 写盘失败 / 半成功）都是 409：
