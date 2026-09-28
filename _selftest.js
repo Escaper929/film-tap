@@ -173,12 +173,12 @@ const CASES = [
     mustNot:["累计快门"] },
   { name:"设置与备份",  search:"",       hash:"#/settings",
     must:["导出备份","导入备份","已登记的机身 ID","?c=","清空全部数据",
-          "这台 NAS","立即存到 NAS","重新读取","断开连接",
-          "同步到 WebDAV","WebDAV 目录地址","保存同步设置"],
-    /* GitHub 那整套已经拆掉了。下面头几个 mustNot 是**防它偷偷长回来**：
-       页面里再冒出任何一个 GitHub 相关的字眼，都说明有残留没摘干净。
+          "这台 NAS","立即存到 NAS","重新读取","断开连接"],
+    /* GitHub 和 WebDAV 那两整套都拆掉了。下面头几个 mustNot 是**防它们偷偷长回来**：
+       页面里再冒出任何一个相关字眼，都说明有残留没摘干净。
        （后面几条是凭据形状的老护栏，留着。） */
     mustNot:["GitHub","github","私有仓库","访问令牌","fine-grained",
+             "WebDAV","webdav",
              "192.168.","WEBDAV_AUTH","Authorization: Basic","Bearer ",
              "ghp_","gho_","github_pat_"] }
 ];
@@ -234,7 +234,7 @@ try {
 } catch (e) { check("统计页三格排满一行", false, "抛异常 " + e.message); }
 
 /* ── 老数据里的 shots 会被清掉 ──
-   计数下线了，可老库（本机 localStorage、导出的 JSON、私有仓库里的 data.json）
+   计数下线了，可老库（本机 localStorage、导出的 JSON、NAS 上的 data.json）
    里还留着 shots。不清掉的话它会一直跟着导出和同步来回跑，
    以后有人看到这个字段会以为它还在生效 —— 而没有任何代码读它。
    注意 total 必须留下：那是「这卷多少张」，和计数是两回事。 */
@@ -296,61 +296,6 @@ try {
         "留空=" + a + " 填0=" + b + " 填24=" + c);
 } catch (e) { check("总张数留空回落到画幅默认", false, "抛异常 " + e.message); }
 
-/* ══════════════════════════════════════════════════════════
-   WebDAV 的两个前提，保存时就得挡住。
-   https 页面发不出 http 请求 —— 浏览器叫它「混合内容」，拦得非常彻底：
-   请求根本不会离开浏览器。于是现象和「NAS 没开机」一模一样，
-   用户会跑去查一个根本没坏的网络（用户的实际场景：外网走 IPv6 DDNS，网络本身是通的）。
-   ══════════════════════════════════════════════════════════ */
-try {
-  clearDav();
-  __setLoc("", "#/settings"); render();
-
-  __setValue("#dav-url", "http://nas.example.com:5005/dav/film/");
-  __setValue("#dav-user", "filmapp");
-  __setValue("#dav-pass", "app-password");
-  saveDavFromForm();
-  const msg1 = __el("#toast").textContent;
-  const mix1 = getDav() === null && /https 页面发不出 http 请求/.test(msg1);
-
-  /* 同一份配置换成 https 就该能存下来 —— 否则这条护栏就是「一律不放行」，
-     而不是「只挡真正用不了的那种」 */
-  __setValue("#dav-url", "https://nas.example.com/dav/film/");
-  saveDavFromForm();
-  const d1 = getDav();
-  const ok2 = !!d1 && d1.url === "https://nas.example.com/dav/film/" && d1.user === "filmapp";
-
-  /* 清空地址 = 清除设置，这条老行为不能被新护栏改掉 */
-  __setValue("#dav-url", "");
-  saveDavFromForm();
-  const ok3 = getDav() === null;
-
-  check("http 地址在 https 页面下被挡", mix1 && ok2 && ok3,
-        "拦住=" + mix1 + " https 能存=" + ok2 + " 清空仍可清=" + ok3);
-} catch (e) { check("http 地址在 https 页面下被挡", false, "抛异常 " + e.message); }
-
-/* ── 同步设置：只落本机、不进源码 ── */
-try {
-  __setLoc("", "#/settings"); render();
-  __setValue("#dav-url", "https://nas.example.com/dav/film/");
-  __setValue("#dav-user", "filmapp");
-  __setValue("#dav-pass", "app-password");
-  saveDavFromForm();
-  const c = getDav();
-  const ok1 = c && c.url === "https://nas.example.com/dav/film/" && c.user === "filmapp";
-  const ok2 = __app().indexOf("立即同步") >= 0 && __app().indexOf("从 NAS 恢复") >= 0;
-
-  // 密码留空应沿用已有的，不被清掉
-  __setValue("#dav-pass", "");
-  saveDavFromForm();
-  const ok3 = getDav().pass === "app-password";
-
-  clearDav();
-  const ok4 = getDav() === null;
-  check("同步设置本机存储", ok1 && ok2 && ok3 && ok4,
-        "落库=" + ok1 + " 按钮=" + ok2 + " 留空保留=" + ok3 + " 可清除=" + ok4);
-} catch (e) { check("同步设置本机存储", false, "抛异常 " + e.message); }
-
 /* ── 标签 URL 生成 ── */
 __setLoc("", "#/settings");
 render();
@@ -403,19 +348,6 @@ try {
   check("改名迁移（本机数据）", ok1 && ok2 && ok3,
         "接过来=" + ok1 + " 落新键=" + ok2 + " 新键优先=" + ok3);
 } catch (e) { check("改名迁移（本机数据）", false, "抛异常 " + e.message); }
-
-/* ── 改名迁移：已填好的 NAS 设置同样不能丢 ── */
-try {
-  localStorage.removeItem("filmtap.webdav");
-  localStorage.setItem("filmnfc.webdav",
-    JSON.stringify({ url: "https://nas.example.com/dav/x/", user: "u", pass: "p" }));
-
-  const c   = getDav();
-  const ok1 = !!c && c.url === "https://nas.example.com/dav/x/" && c.user === "u";
-  const ok2 = localStorage.getItem("filmtap.webdav") !== null;
-
-  check("改名迁移（NAS 设置）", ok1 && ok2, "读老键=" + ok1 + " 落新键=" + ok2);
-} catch (e) { check("改名迁移（NAS 设置）", false, "抛异常 " + e.message); }
 
 /* ── 库存页与汇总 ── */
 try {
@@ -619,7 +551,6 @@ try {
     "saveSetup","saveLoad","clearFilm","pickFilm","setFilmFormat","setImportMode",
     "runImport","resetImport","importFromPaste","onImportFile","setImportMap",
     "exportJSON","importJSON",
-    "saveDavFromForm","syncToNas","restoreFromNas","testDav","clearDavSettings",
     /* 自建 NAS 那一栏的按钮。这张表必须跟着渲染出来的 onclick 一起长 ——
        名字漏了一个，被测的那段 JS 就会去全局找真的实现而找不到，于是报「有泄漏」。
        那个失败看着像注入，其实是这张表过期了，纯噪音。
@@ -925,10 +856,10 @@ try {
 } catch (e) { check("接口路径不带前导斜杠（NAS_API 自带结尾斜杠）", false, "抛异常 " + e.message); }
 
 /* ══════════════════════════════════════════════════════════
-   同步层的通用行为 —— 和具体走哪条路无关，所以放在异步段里用打桩的 fetch 跑。
-   钉两件事：① 整库快照，新字段只要做成 DB 顶层字段就自动跟着走；
-   ② 「只给要发出去的那一份盖时间戳」，不回写本机。
-   ② 修的是一个真实故障：点一次别的同步按钮，却顺带动了另一处存储。
+   同步层的通用行为，放在异步段里用打桩的 fetch 跑：
+   整库快照 —— 新字段只要做成 DB 顶层字段就自动跟着走。
+   （「只给发出去的那一份盖时间戳、不回写本机」那条由下面 NAS 的用例钉住：
+   点一次同步按钮却顺带动了另一处存储，是修过的一个真实故障。）
    ══════════════════════════════════════════════════════════ */
 (async () => {
   try {
@@ -946,114 +877,13 @@ try {
     const okF3 = JSON.stringify(again).indexOf("冰箱") >= 0;   // 导出备份也带得走
     check("新字段自动跟着同步", okF1 && okF2 && okF3,
           "活过 load/save=" + okF1 + " 活过 normalize=" + okF2 + " 进导出=" + okF3);
-
-    /* ── 点「同步到 NAS」（WebDAV 那条路）不该顺带把数据推给自建后端 ──
-       早先 syncToNas() 先把 savedAt 写回本机再 save()，而 save() 在「自动同步」
-       开着时会排一次上传 —— 用户点的是 WebDAV 那个按钮，动到的却是另一处存储。
-
-       ⚠️ 不能靠 await flushNasPush() 来收尾：这个自检把 setTimeout 桩成了 () => 0，
-          于是 flush 里的「有没有排队」永远为假，测试会**假装通过**。
-          所以这里自己把窗口里排上的回调全抓下来跑掉 —— 真排了上传的话，
-          这一跑就会打到 /api/data。
-          ⚠️ 不能只看「抓到回调没有」：toast() 自己也用 setTimeout，
-             抓到它纯属正常。判定必须落到「那个 PUT 去了哪个路径」。 */
-    const realSetTimeout = global.setTimeout;
-    const PUTS = [];
-    global.fetch = async (url, opt) => {
-      const method = ((opt && opt.method) || "GET").toUpperCase();
-      const u = String(url);
-      if (method === "PUT"){
-        PUTS.push({ url:u, body:JSON.parse(opt.body) });
-        if (u.indexOf("/api/") >= 0)
-          return { ok:true, status:200, json: async () => ({ ok:true, rev:"rev-x" }) };
-        return { ok:true, status:201, json: async () => ({}) };
-      }
-      return { ok:true, status:200, json: async () => ({ data:null, rev:null }) };
-    };
-
-    saveDav({ url:"https://nas.example.com/dav/film/", user:"u", pass:"p" });
-    /* 自建后端那一路的自动同步得是**开着**的 —— 关着的话「没上传」什么也证明不了。 */
-    saveNas({ auto:true });
-    nasState = "yes"; nasSess = true;
-
-    const pending = [];
-    global.setTimeout = (fn) => { pending.push(fn); return 1; };
-    await syncToNas();
-    global.setTimeout = realSetTimeout;
-    for (const fn of pending){ try{ await fn(); }catch(e){} }
-
-    const wentDav = PUTS.some(p => p.url.indexOf("nas.example.com") >= 0);
-    const wentApi = PUTS.filter(p => p.url.indexOf("/api/") >= 0).length;
-    const okN1 = wentDav && wentApi === 0;
-    const okN2 = load().savedAt == null;          // savedAt 也不该被写进本机
-    check("WebDAV 同步不触达自建 NAS", okN1 && okN2,
-          "写到 WebDAV=" + wentDav + " 写 /api/ 次数=" + wentApi + " 本机无 savedAt=" + okN2);
-
-    /* 后面 NAS 那批用例自己会摆状态，这里把它们还原成「不在 NAS 上」。 */
-    clearNasRev();
-    nasState = "no"; nasSess = false;
-
-    /* ══════════════════════════════════════════════════════════
-       WebDAV 的三层诊断。
-       网络不通、被跨域拦、密码不对 —— 这三种在浏览器里抛的都是
-       同一个 TypeError（Failed to fetch），所以旧文案
-       「连不上 NAS，检查地址和网络」**三种情况都会出现**，
-       用户于是跑去查一个根本没坏的网络（用户的实际场景：外网走 IPv6 DDNS
-       域名，网络本身是通的，问题只可能在跨域或证书）。
-       testDav 用一次 no-cors 探测把它们分开。
-       ⚠️ 这个文件是 String.raw 模板串，注释里**不能用反引号**，会截断驱动。
-       ══════════════════════════════════════════════════════════ */
-    __setLoc("", "#/settings"); render();
-    __setValue("#dav-url",  "https://nas.example.com/dav/film/");
-    __setValue("#dav-user", "filmapp");
-    __setValue("#dav-pass", "app-password");
-
-    const probeOK = async (url, opt) => {
-      if (opt && opt.mode === "no-cors") return { ok:true, status:0, type:"opaque" };
-      throw new TypeError("Failed to fetch");
-    };
-
-    /* ① 连 no-cors 探测都抛 → 连接根本建不起来。
-       这一层的文案必须同时点到**证书**：自签证书在 TLS 阶段就被拒，
-       抛的异常和「DNS 解析不了」一模一样。飞牛 / 群晖自带的 WebDAV
-       默认就是自签证书 —— 漏了这两个字，用户就去查一个没坏的域名了。 */
-    global.fetch = async () => { throw new TypeError("Failed to fetch"); };
-    await testDav();
-    const t1 = __el("#toast").textContent;
-    const w1 = /连不到这个地址/.test(t1);
-    const w5 = /证书/.test(t1);
-
-    /* ② 探测过了、正常请求被拦 → 网络好着，是 NAS 没允许跨域 */
-    global.fetch = probeOK;
-    await testDav();
-    const w2 = /没允许跨域/.test(__el("#toast").textContent);
-
-    /* ③ 探测过、真请求 404 → 通了，只是还没有备份文件 */
-    global.fetch = async (url, opt) => {
-      if (opt && opt.mode === "no-cors") return { ok:true, status:0, type:"opaque" };
-      return { ok:false, status:404, json: async () => ({}) };
-    };
-    await testDav();
-    const w3 = /还没有备份文件/.test(__el("#toast").textContent);
-
-    /* ④ 认证失败要说成认证失败，别混进「连不上」 */
-    global.fetch = async (url, opt) => {
-      if (opt && opt.mode === "no-cors") return { ok:true, status:0, type:"opaque" };
-      return { ok:false, status:401, json: async () => ({}) };
-    };
-    await testDav();
-    const w4 = /账号密码不对/.test(__el("#toast").textContent);
-
-    check("WebDAV 诊断分得清四种失败", w1 && w2 && w3 && w4 && w5,
-          "网络/证书不通=" + w1 + " 提到证书=" + w5 + " 跨域被拦=" + w2 +
-          " 无备份=" + w3 + " 密码错=" + w4);
   } catch (e) {
     check("同步层通用行为", false, "抛异常 " + e.message);
   }
 
   /* ══════════════════════════════════════════════════════════
      自建 NAS 后端（同源 /api/*）。
-     这条路和上面两条最大的不同只有一处，但结果差很远：
+     这条路和 JSON 导出最大的不同只有一处，但结果差很远：
      **登录态住在服务器下发的 cookie 里，而不是住在 localStorage 里。**
      浏览器「闲置 7 天清空存储」清的是脚本能写的那些（localStorage /
      IndexedDB / Cache API / document.cookie）；Set-Cookie 下发的 cookie
