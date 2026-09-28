@@ -85,6 +85,8 @@ fi
 # （macOS 自带的 bash 3.2 就是），VAULT_MOUNT 也是同一个理由。
 SSH_PORT_OPT=""
 [ -n "${SSH_PORT}" ] && SSH_PORT_OPT="-p ${SSH_PORT}"
+# 印给人看的那条命令（SSH_PORT 没给就别留出一个双空格）
+SSH_HINT="ssh${SSH_PORT:+ ${SSH_PORT_OPT}}"
 
 SSH=(ssh ${SSH_PORT_OPT} "${NAS_USER}@${NAS_HOST}")
 
@@ -100,7 +102,19 @@ fi
 echo "→ 拉镜像"
 # --pull=always 是给 :latest 用的。不加它、或者用 docker start，
 # 都会让「更新」悄悄变成「什么都没做」—— 这是自动更新最常见的假成功。
-"${SSH[@]}" "docker pull ${IMAGE}"
+#
+# 但「拉不动」不等于「不能用」：Docker Hub 在国内本来就时通时不通，本地要是
+# 已经有一份，硬失败会让「改个端口重跑一次部署」这种事也做不成。所以拉失败
+# 先看本地有没有 —— 有就带着警告继续，一份都没有才真的退出。
+if ! "${SSH[@]}" "docker pull ${IMAGE}"; then
+  echo "   ⚠️ 拉取失败（Docker Hub 不通？）—— 看看本地有没有一份能用的"
+  if ! "${SSH[@]}" "docker image inspect ${IMAGE} >/dev/null 2>&1"; then
+    echo "   ✖ 本地也没有 ${IMAGE}，没法继续。等网络通了再跑一次。" >&2
+    exit 1
+  fi
+  echo "   ⚠️ 本地已有 ${IMAGE}，继续部署 —— 但这次用的**不是**刚拉的那份。"
+  echo "      要确认拿到的是最新版，等网络通了再重跑一次。"
+fi
 
 echo "→ 建目录"
 "${SSH[@]}" "mkdir -p '${BASE}/data' '${BASE}/data/history'"
@@ -131,7 +145,7 @@ if [ -n "${FT_PASSWORD:-}" ]; then
     | "${SSH[@]}" "docker exec -i ${NAME} python3 /app/server.py --set-password"
 else
   echo "→ 没给 FT_PASSWORD。密码要你自己设（不经过命令行参数，不会进 ps）："
-  echo "   ssh ${SSH_PORT_OPT} -t ${NAS_USER}@${NAS_HOST} 'docker exec -it ${NAME} python3 /app/server.py --set-password'"
+  echo "   ${SSH_HINT} -t ${NAS_USER}@${NAS_HOST} 'docker exec -it ${NAME} python3 /app/server.py --set-password'"
 fi
 
 if [ "${WATCHTOWER}" = "yes" ]; then
