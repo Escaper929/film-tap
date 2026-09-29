@@ -1197,6 +1197,17 @@ try {
           dataIs600 && wideOpen.length === 0,
           "data.json=0600=" + dataIs600 + " 字面量放宽权限的写入=" + wideOpen.length +
           "（全文共 " + allWrites.length + " 处写入）");
+
+    /* ③ 改密码必须作废全部会话。
+       会话是独立 token、有效期 400 天；set_password 只改 config.json 的话，
+       密码泄露后"改密码"这个补救动作是半残的 —— 旧会话还能用 400 天。
+       所以 set_password 的函数体里必须出现 SESSIONS_FILE（清空它）。 */
+    const defLine = src.split("\n").findIndex(l => l.includes("def set_password(self, password):"));
+    const pwBody = defLine >= 0 ? src.split("\n").slice(defLine, defLine + 16).join("\n") : "";
+    check("后端：改密码作废全部会话", pwBody.includes("SESSIONS_FILE"),
+          pwBody.includes("SESSIONS_FILE")
+            ? "set_password 清空 sessions.json"
+            : "!! set_password 没碰 sessions.json —— 改密码后旧会话继续有效");
   })();
 
   __report(REPORT, pass, fail);
