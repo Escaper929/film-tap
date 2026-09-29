@@ -153,7 +153,7 @@ const CASES = [
     must:["Kodak ColorPlus 200","214 天","该冲了","偏久"],
     mustNot:[] },
   { name:"未登记新 ID",  search:"",       hash:"#/c/brand-new",
-    must:["新挂件","机身名称","画幅","brand-new"],
+    must:["新标签","机身名称","画幅","brand-new"],
     mustNot:[] },
   { name:"换卷表单",    search:"",       hash:"#/c/m6/load",
     must:["换一卷","Kodak Portra 400","Ilford HP5 Plus 400","记进历史","总共多少张"],
@@ -163,7 +163,7 @@ const CASES = [
     mustNot:[] },
   { name:"编辑机身",    search:"",       hash:"#/c/m6/setup",
     must:["编辑机身",'value="Leica"','value="M6"',"135","画幅"],
-    mustNot:["新挂件"] },
+    mustNot:["新标签"] },
   { name:"历史记录",    search:"",       hash:"#/c/m6/history",
     must:["Ilford HP5 Plus 400","Fujifilm C200","22 天","120 天","36 张"],
     mustNot:["/36 张"] },
@@ -595,7 +595,7 @@ try {
 
   const EVIL = "x');document.title='PWNED';//";
 
-  /* ① 还没登记的挂件 —— 这条路是 renderSetup，ID 直接落进 saveSetup('…') */
+  /* ① 还没登记的标签 —— 这条路是 renderSetup，ID 直接落进 saveSetup('…') */
   __setLoc("?c=" + encodeURIComponent(EVIL), "");
   render();
   const r1 = runHandlers(__app());
@@ -654,7 +654,7 @@ try {
   const ok3 = bad.length === 0;
 
   check("机身 ID 不能逃出 onclick", ok1 && ok2 && ok3,
-        "挂件页无泄漏=" + ok1 + " 参数完整=" + ok2 +
+        "标签页无泄漏=" + ok1 + " 参数完整=" + ok2 +
         (bad.length ? " 有泄漏的页面=" + bad.join(" ") : " " + VIEWS.length + " 个页面全干净=" + ok3));
 
   localStorage.removeItem("filmtap.v1.corrupt");

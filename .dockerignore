@@ -14,5 +14,6 @@ Dockerfile
 _selftest.js
 _firstrun.py
 _shots.py
+_obsidian_test.py
 __pycache__
 *.pyc

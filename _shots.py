@@ -30,11 +30,16 @@ VIEWS = [
     ("03-该冲了",       "/?demo=1&c=xa2",        None,            False),
     ("04-换卷表单",     "/?demo=1&c=m6",         "#/c/m6/load",   False),
     ("05-历史记录",     "/?demo=1&c=m6",         "#/c/m6/history",False),
-    ("06-新挂件登记",   "/?demo=1&c=brand-new",  None,            False),
+    ("06-新标签登记",   "/?demo=1&c=brand-new",  None,            False),
     ("07-设置与备份",   "/?demo=1&c=m6",         "#/settings",    False),
     ("08-统计",        "/?demo=1&c=m6",         "#/stats",       False),
     ("09-编辑机身",     "/?demo=1&c=rollei",     "#/c/rollei/setup", False),
-    ("10-空模板首页",   "/",                    "#/",            True),
+    # 空库首页 —— 新用户看到的第一屏（「还没有登记任何机身」+ 那张空状态图）。
+    # ⚠️ 不能直接打开 "/"：静态服务器探不到 /api/health，页面会停在 gate，
+    #    那是**另一屏**（见最下面的「连不上服务端」）。所以这里先用 ?demo=1
+    #    进应用，再把数据抹成空的 —— 空的是数据，不是启动路径。
+    ("10-空模板首页",   "/?demo=1",             "#/",            True,  None,
+     "setTimeout(() => { save(blank()); gate='ready'; render(true); }, 60);"),
     ("11-胶卷库存",     "/?demo=1&c=m6",         "#/films",       False),
     ("12-新增库存",     "/?demo=1&c=m6",         "#/films/new",   False),
     ("13-库存导入",     "/?demo=1&c=m6",         "#/films/import",False),
@@ -51,11 +56,14 @@ VIEWS = [
     # 截图默认打的是本机静态服务器（探不到 /api/health），所以这里把
     # gate 直接摆成 login 再渲染：状态是注入的，排版是真的。
     # 用 setTimeout 兜一下，避免和启动时那次异步探测（会把它改回 offline）抢。
-    ("15-连接NAS入口",  "/?demo=1&c=m6",        "#/settings",    True,  None,
+    ("15-自建NAS未登录",  "/?demo=1&c=m6",        "#/settings",    True,  None,
      "setTimeout(() => { gate='login'; render(true); }, 60);"),
     ("16-自建NAS已连上", "/?demo=1&c=m6",        "#/settings",    True,  None,
      "setTimeout(() => { gate='ready'; nasState='yes'; nasSess=true;"
      " saveNas({at:'2026-09-27T07:30:00Z'}); render(true); }, 60);"),
+    # 「容器停了页面就打不开」是这个 App 的头号性质，它长什么样得单独有一张。
+    # 内容不注入 —— 不连服务端本来就该是这个结果，所以直接打不带 ?demo=1 的地址。
+    ("17-连不上服务端",  "/",                    "#/",            True),
 ]
 
 

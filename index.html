@@ -812,7 +812,7 @@ function renderHome(db){
 
   if (!cams.length){
     h += '<div class="empty"><div class="big">▢</div>'
-       + '每台相机挂一个 NFC 挂件，<br>碰一下就知道里面装的什么卷。</div>';
+       + '每台相机贴一张 NFC 标签，<br>碰一下就知道里面装的什么卷。</div>';
   } else {
     h += '<div class="list">';
     for (const c of cams){
@@ -856,7 +856,7 @@ function renderHome(db){
          + (ft.soon ? '，其中 ' + ft.soon + ' 款快到期或已过期' : '') + '。</div>';
     }
   }
-  h += '<div class="foot">碰一下挂件 › 直接跳到那台机身 › 自动记天数和历史<br>'
+  h += '<div class="foot">碰一下标签 › 直接跳到那台机身 › 自动记天数和历史<br>'
      +   '标签里要写的网址：<span class="mono">' + esc(tagBase()) + '?c=机身ID</span></div>';
   return h;
 }
@@ -944,9 +944,9 @@ function renderSetup(db, id, isKnown){
     ? navBack(c.name || "机身", "#/c/" + encodeURIComponent(id))
     : (isKnown ? navBack("机库", "#/") : '<div class="nav"><span class="title">film-tap</span></div>');
 
-  h += '<h1>' + (exists ? "编辑机身" : (isKnown ? "新挂件" : "登记机身")) + '</h1>';
+  h += '<h1>' + (exists ? "编辑机身" : (isKnown ? "新标签" : "登记机身")) + '</h1>';
   if (!exists)
-    h += '<div class="banner i">这个挂件还没登记。给它起个名字，以后碰一下就能看到里面装了什么。</div>';
+    h += '<div class="banner i">这张标签还没登记。给它起个名字，以后碰一下就能看到里面装了什么。</div>';
 
   h += '<label>机身名称</label>'
      + '<input id="f-name" placeholder="例如 Leica M6 / 尼康 FM2" autocomplete="off" value="' + esc(exists ? c.name : "") + '">';
@@ -967,7 +967,7 @@ function renderSetup(db, id, isKnown){
      + '<input id="f-cnote" placeholder="例如 黑色 0.72 取景器" autocomplete="off" value="' + esc(exists ? c.note : "") + '">';
   h += '<div style="height:22px"></div>';
   h += '<button class="btn primary" onclick="saveSetup(\'' + jsq(id) + '\')">保存</button>';
-  h += '<div class="hint">挂件 ID：<span class="mono">' + esc(id) + '</span>，这是标签里的唯一标识，写卡时用得到。</div>';
+  h += '<div class="hint">标签 ID：<span class="mono">' + esc(id) + '</span>，这是标签里的唯一标识，写卡时用得到。</div>';
   return h;
 }
 
@@ -1604,7 +1604,7 @@ function saveSetup(id){
   Object.assign(db.cameras[id], { name, note, brand, model, format });
   save(db);
   toast(isNew ? "已登记" : "已保存");
-  // 新挂件第一次碰：起完名直接接「填当前装的什么卷」，省一步
+  // 新标签第一次碰：起完名直接接「填当前装的什么卷」，省一步
   go("#/c/" + encodeURIComponent(id) + (isNew && !db.cameras[id].loaded ? "/load" : ""));
 }
 
