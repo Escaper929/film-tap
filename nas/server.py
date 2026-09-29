@@ -21,6 +21,8 @@
 刻意保持的东西：
   · 密码只以加盐哈希落在 data 目录的 config.json（0600）；页面里、代码里、
     日志里都不出现明文。日志只记「方法 + 路径 + 状态码」，绝不记请求体。
+  · 改密码会作废全部已有会话（sessions.json 直接清空）—— 会话是独立 token、
+    有效期 400 天，不清掉的话，密码泄露后改密码也拦不住旧会话。
   · 写文件是「同目录临时文件 → fsync → os.replace」，半截写入不会顶掉好的那份。
   · 每次接受写入都留一份带时间戳的历史副本 —— 这是原来只有 Git 才有的东西。
   · 拒绝「服务端有 N 台机身、而送来的这份是空的」这种上传（除非带 force）。
@@ -807,6 +809,11 @@ class Store:
             c["passwordHash"] = hash_password(password)
             c["updatedAt"] = now_iso()
             self._write_json(self.p(CONFIG_FILE), c, 0o600)
+            # 改密码 = 作废全部已有会话。会话是独立 token、有效期 400 天，
+            # 不清掉的话，密码泄露后"改密码"这个补救动作是半残的 ——
+            # 拿着旧会话的人还能继续用。这是 --set-password 的场景，
+            # 没有"当前会话"需要保留，一刀切最干净。
+            self._write_json(self.p(SESSIONS_FILE), {}, 0o600)
 
     def check_password(self, password):
         c = self._read_json(self.p(CONFIG_FILE), {}) or {}
@@ -1638,7 +1645,8 @@ def main():
             print("两次输入不一致", file=sys.stderr)
             return 2
         store.set_password(p1)
-        print("密码已更新（%s）" % os.path.join(args.data, CONFIG_FILE))
+        print("密码已更新（%s）；全部已有会话已作废，各设备需重新登录"
+              % os.path.join(args.data, CONFIG_FILE))
         return 0
 
     if not store.configured():
