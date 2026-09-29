@@ -4,7 +4,7 @@ name: 构建镜像
 # push 到 main 就出镜像，NAS 上的 watchtower 会把新镜像拉下来重建容器。
 #
 # 三道门，缺一不可：
-#   ① 构建**之前**跑 node _selftest.js。视图渲染、数据流、凭据护栏，
+#   ① 构建**之前**跑 node _selftest.js 和 python _obsidian_test.py。视图渲染、数据流、凭据护栏，
 #      以及「没有离线缓存」（容器停了页面就该打不开）都在里面。
 #      自检不过就根本不构建，宁可没有新镜像。
 #   ② 构建之后再拿真镜像起一个容器，走一遍「探活 → 设密码 → 登录 → 存 → 读 → 未登录 401」。
@@ -56,6 +56,11 @@ jobs:
       # ① 自检。PR 上只跑到这儿就够 —— 没必要为一次改动烧一个镜像。
       - name: 自检（结构 / 指纹 / 凭据护栏）
         run: node _selftest.js
+
+      # Obsidian 联动是全项目最复杂的逻辑（账本解析 / 幂等追加 / 回写），
+      # 它的测试零依赖，不接进 CI 就只在本地跑 —— 而那恰恰是最需要 CI 守住的。
+      - name: 自检（Obsidian 联动）
+        run: python _obsidian_test.py
 
       - uses: docker/setup-buildx-action@v4
 
